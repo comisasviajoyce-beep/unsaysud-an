@@ -1,0 +1,19 @@
+[
+  {
+    "id": "owner_1795422712049_2jxp",
+    "stallNo": "Stall 1",
+    "stallName": "Stall 1 — Swirly Bits",
+    "ownerName": "Ate Rose Owner",
+    "username": "aterose_e2e",
+    "email": "aterose_e2e@example.com",
+    "contactNumber": "09171234567",
+    "zone": "outside",
+    "accountStatus": "active",
+    "passwordHash": "e27df01559e9a25c9c59413357f1799d43a9b9702e1d45466a2336a32499505969bfe3b7b6307f4fb1c8a33b9b5815434d890eabf49d5a69eb3829347c07223f",
+    "passwordSalt": "855a77c15365a3d11034dd16cc26009d",
+    "pinHash": "7ec026a63050cfefa1b8c011a35e7deee56d0f375c3394a41ec8ffe01508901863fbd5066fff67a172f6dc0ef8fd38cc5f51e431b0b9707cd03d91f57d68a184",
+    "pinSalt": "e26fc5eb96a0912be3f850b5f1346a7e",
+    "createdAt": "2026-11-23T08:31:52.049Z",
+    "updatedAt": "2026-11-23T08:31:52.049Z"
+  }
+]
