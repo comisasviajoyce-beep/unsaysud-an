@@ -1,0 +1,92 @@
+{
+  "visitors": {
+    "v_y8l8nfpv_mwt0ez0n": {
+      "visitorId": "v_y8l8nfpv_mwt0ez0n",
+      "firstSeenAt": 1795422861774,
+      "lastSeenAt": 1795426310046,
+      "lastSessionId": "sess_1795422862535_m01rdqfy",
+      "sessionCount": 1,
+      "totalVisits": 7,
+      "lastDeviceType": "Desktop"
+    }
+  },
+  "visits": [
+    {
+      "id": "visit_1795422861774_2mem2",
+      "visitorId": "v_y8l8nfpv_mwt0ez0n",
+      "sessionId": "sess_1795422862535_m01rdqfy",
+      "page": "home",
+      "deviceType": "Desktop",
+      "visitorType": "New",
+      "qrSource": null,
+      "qrStall": null,
+      "timestamp": 1795422861774
+    },
+    {
+      "id": "visit_1795423032812_n9pf7",
+      "visitorId": "v_y8l8nfpv_mwt0ez0n",
+      "sessionId": "sess_1795422862535_m01rdqfy",
+      "page": "home",
+      "deviceType": "Desktop",
+      "visitorType": "New",
+      "qrSource": null,
+      "qrStall": null,
+      "timestamp": 1795423032812
+    },
+    {
+      "id": "visit_1795423114314_r4k1x",
+      "visitorId": "v_y8l8nfpv_mwt0ez0n",
+      "sessionId": "sess_1795422862535_m01rdqfy",
+      "page": "home",
+      "deviceType": "Desktop",
+      "visitorType": "New",
+      "qrSource": null,
+      "qrStall": null,
+      "timestamp": 1795423114314
+    },
+    {
+      "id": "visit_1795423718695_p1oxf",
+      "visitorId": "v_y8l8nfpv_mwt0ez0n",
+      "sessionId": "sess_1795422862535_m01rdqfy",
+      "page": "home",
+      "deviceType": "Desktop",
+      "visitorType": "New",
+      "qrSource": null,
+      "qrStall": null,
+      "timestamp": 1795423718695
+    },
+    {
+      "id": "visit_1795425210193_gi54y",
+      "visitorId": "v_y8l8nfpv_mwt0ez0n",
+      "sessionId": "sess_1795422862535_m01rdqfy",
+      "page": "home",
+      "deviceType": "Desktop",
+      "visitorType": "Returning",
+      "qrSource": null,
+      "qrStall": null,
+      "timestamp": 1795425210193
+    },
+    {
+      "id": "visit_1795425303432_waq4v",
+      "visitorId": "v_y8l8nfpv_mwt0ez0n",
+      "sessionId": "sess_1795422862535_m01rdqfy",
+      "page": "home",
+      "deviceType": "Desktop",
+      "visitorType": "Returning",
+      "qrSource": null,
+      "qrStall": null,
+      "timestamp": 1795425303432
+    },
+    {
+      "id": "visit_1795426253001_fe0zc",
+      "visitorId": "v_y8l8nfpv_mwt0ez0n",
+      "sessionId": "sess_1795422862535_m01rdqfy",
+      "page": "home",
+      "deviceType": "Desktop",
+      "visitorType": "Returning",
+      "qrSource": null,
+      "qrStall": null,
+      "timestamp": 1795426253001
+    }
+  ]
+}

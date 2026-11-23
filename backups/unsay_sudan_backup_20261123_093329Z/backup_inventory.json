@@ -1,0 +1,199 @@
+{
+  "createdAt": "2026-11-23T09:33:29.823802+00:00",
+  "backupDirectory": "backups/unsay_sudan_backup_20261123_093329Z",
+  "archivePath": "backups/unsay_sudan_backup_20261123_093329Z.zip",
+  "totalFilesBackedUp": 17,
+  "totalBytesBackedUp": 247563,
+  "emptyDirectoriesPreserved": [
+    "public/uploads/proofs"
+  ],
+  "failedFiles": [],
+  "missingLazyFilesNotYetCreated": [
+    "data/super_admin.json",
+    "data/.session_secret",
+    "data/stall_analytics.json"
+  ],
+  "files": [
+    {
+      "path": "data/.gitkeep",
+      "sizeBytes": 34,
+      "sha256": "783960758529fa7c0e7582acca6e57c328e4b7cd2f12fed3971d16200e2b962d",
+      "records": null
+    },
+    {
+      "path": "data/admin_payment_settings.json",
+      "sizeBytes": 1354,
+      "sha256": "cea19a5e24407a567b35856f2e42d447db597506cb28339b43090d346af1d10c",
+      "records": {
+        "type": "object",
+        "keys": 6,
+        "details": {
+          "gcash": 4,
+          "bank": 5,
+          "qrCode": 3,
+          "plans": 2
+        }
+      }
+    },
+    {
+      "path": "data/audit_logs.json",
+      "sizeBytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "records": {
+        "type": "array",
+        "count": 0
+      }
+    },
+    {
+      "path": "data/menu_items.json",
+      "sizeBytes": 98972,
+      "sha256": "8889b243b677b4fb2cfc69b2e27b74d5ae5c243813d557b8de1f8042e032be5c",
+      "records": {
+        "type": "array",
+        "count": 184
+      }
+    },
+    {
+      "path": "data/menu_versions.json",
+      "sizeBytes": 133562,
+      "sha256": "fedd14263df185c3ce0bfdfaffba238e7c7d22ccd51c9fed58ceb34a46bf27b8",
+      "records": {
+        "type": "object",
+        "keys": 16,
+        "details": {
+          "Stall 1 \u2014 Swirly Bits": 1,
+          "Stall 2 \u2014 Java Rice": 1,
+          "Stall 3 \u2014 Bread Stall": 1,
+          "Stall 4 \u2014 Pinoy Food Toppings": 1,
+          "Stall 5 \u2014 4J Food Stall": 1,
+          "Stall 6 \u2014 R&M Refreshment Stall": 1,
+          "Stall 7 \u2014 Judah Food 7 & Drinks": 1,
+          "Stall 8A \u2014 StreetFood Stall": 1,
+          "Stall 8B \u2014 Juice Bar & Popcorn": 1,
+          "Stall 9 \u2014 Fresh Fruit Bar": 1,
+          "Stall 10 \u2014 Master Dumpling": 1,
+          "Stall 11 \u2014 Deeyang by: Pops Dessert": 1,
+          "Stall 12 \u2014 Gulaman District": 1,
+          "Stall 13 \u2014 Val's FoodHub": 1,
+          "Stall 14 \u2014 Shamir Food Houz": 3,
+          "Stall 15 \u2014 France Bistro": 1
+        }
+      }
+    },
+    {
+      "path": "data/notifications.json",
+      "sizeBytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "records": {
+        "type": "array",
+        "count": 0
+      }
+    },
+    {
+      "path": "data/owner_images_registry.backup.json",
+      "sizeBytes": 2576,
+      "sha256": "da7612559ceb5a1ccf1ad615f24a03018553a2383fc32b423b9ee5cf7371a3de",
+      "records": {
+        "type": "object",
+        "keys": 5,
+        "details": {
+          "images": 4,
+          "archivedDishes": 0
+        }
+      }
+    },
+    {
+      "path": "data/owner_images_registry.json",
+      "sizeBytes": 2576,
+      "sha256": "da7612559ceb5a1ccf1ad615f24a03018553a2383fc32b423b9ee5cf7371a3de",
+      "records": {
+        "type": "object",
+        "keys": 5,
+        "details": {
+          "images": 4,
+          "archivedDishes": 0
+        }
+      }
+    },
+    {
+      "path": "data/payments.json",
+      "sizeBytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "records": {
+        "type": "array",
+        "count": 0
+      }
+    },
+    {
+      "path": "data/stall_notices.json",
+      "sizeBytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "records": {
+        "type": "object",
+        "keys": 0,
+        "details": {}
+      }
+    },
+    {
+      "path": "data/stall_owners.json",
+      "sizeBytes": 810,
+      "sha256": "f7ade560acb4eaa4448a720d67ba566dead6c5f1fffb63f119cfdeeda45dec8f",
+      "records": {
+        "type": "array",
+        "count": 1
+      }
+    },
+    {
+      "path": "data/stall_sales_records.json",
+      "sizeBytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "records": {
+        "type": "array",
+        "count": 0
+      }
+    },
+    {
+      "path": "data/stall_trials.json",
+      "sizeBytes": 289,
+      "sha256": "fc463592f1bfa55f41a32d72cf7b22e0c80741f56b459f012bb9e66421e8ed3a",
+      "records": {
+        "type": "array",
+        "count": 1
+      }
+    },
+    {
+      "path": "data/subscriptions.json",
+      "sizeBytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "records": {
+        "type": "array",
+        "count": 0
+      }
+    },
+    {
+      "path": "data/visitor_analytics.json",
+      "sizeBytes": 2493,
+      "sha256": "1efa8ceb03732587083c9660c1274a8977a62a4e3041d294a70a1df609dcbe1d",
+      "records": {
+        "type": "object",
+        "keys": 2,
+        "details": {
+          "visitors": 1,
+          "visits": 7
+        }
+      }
+    },
+    {
+      "path": "public/uploads/admin/official_qr.svg",
+      "sizeBytes": 4845,
+      "sha256": "fca626078094a7070dfc9ee7a4f9295deea0a40679bd02e94ff59e7b116a307a",
+      "records": null
+    },
+    {
+      "path": "public/uploads/dishes/.gitkeep",
+      "sizeBytes": 40,
+      "sha256": "898d73ab38cf50c6ac5904ba3e5ba70f9ff1e1d550641732a251f117bbe290aa",
+      "records": null
+    }
+  ]
+}
