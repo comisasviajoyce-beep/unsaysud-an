@@ -26,6 +26,7 @@ import {
   getMerchantSession,
   hashSecret,
   isSuperAdminRegistered,
+  initializeSuperAdminStore,
   requireMerchant,
   requireSuperAdmin,
   setSessionCookie,
@@ -563,6 +564,9 @@ export async function createApp() {
       });
     }
   });
+
+  // Initialize persistent Super Admin storage in Railway MySQL before serving admin routes.
+  await initializeSuperAdminStore();
 
   // Register Subscription, Payment, Due Notifications & Super Admin Management Routes
   registerSubscriptionRoutes(app, {
