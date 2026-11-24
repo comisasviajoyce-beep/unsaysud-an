@@ -88,6 +88,15 @@ export async function initializeAppDataDocumentStore(): Promise<void> {
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
       ON UPDATE CURRENT_TIMESTAMP(3)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_media (
+    media_id VARCHAR(160) NOT NULL PRIMARY KEY,
+    mime_type VARCHAR(100) NOT NULL,
+    media_data LONGBLOB NOT NULL,
+    owner_id VARCHAR(160) NOT NULL,
+    visibility ENUM("public", "private") NOT NULL DEFAULT "private",
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX idx_app_media_owner (owner_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   appDataDocumentStoreReady = true;
 }
 
@@ -138,4 +147,48 @@ export async function flushAppDataDocumentWrites(): Promise<void> {
     appDataWriteError = null;
     throw error;
   }
+}
+
+
+export async function saveAppMedia(
+  mediaId: string,
+  mimeType: string,
+  data: Buffer,
+  ownerId: string,
+  visibility: "public" | "private"
+): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.execute(
+    `INSERT INTO app_media (media_id, mime_type, media_data, owner_id, visibility)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE mime_type = VALUES(mime_type),
+       media_data = VALUES(media_data), owner_id = VALUES(owner_id),
+       visibility = VALUES(visibility)`,
+    [mediaId, mimeType, data, ownerId, visibility]
+  );
+}
+
+export async function getAppMedia(mediaId: string): Promise<{
+  mimeType: string;
+  data: Buffer;
+  ownerId: string;
+  visibility: "public" | "private";
+} | null> {
+  const pool = getDatabasePool();
+  const [rows] = await pool.query<any[]>(
+    "SELECT mime_type, media_data, owner_id, visibility FROM app_media WHERE media_id = ? LIMIT 1",
+    [mediaId]
+  );
+  if (!rows.length) return null;
+  return {
+    mimeType: rows[0].mime_type,
+    data: Buffer.isBuffer(rows[0].media_data) ? rows[0].media_data : Buffer.from(rows[0].media_data),
+    ownerId: rows[0].owner_id,
+    visibility: rows[0].visibility
+  };
+}
+
+export async function deleteAppMedia(mediaId: string): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.execute("DELETE FROM app_media WHERE media_id = ?", [mediaId]);
 }
