@@ -2,6 +2,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import express from "express";
+import { getDatabasePool } from "./config/database";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const IS_VERCEL_RUNTIME =
@@ -281,11 +282,11 @@ export function reloadSuperAdminFromDisk(): SuperAdminRecord | null {
   return getSuperAdmin();
 }
 
-export function isSuperAdminRegistered(): boolean {
+export async function initializeSuperAdminStore(): Promise<void> {\n  const pool = getDatabasePool();\n  await pool.query(`CREATE TABLE IF NOT EXISTS super_admin (singleton_id TINYINT NOT NULL PRIMARY KEY, id VARCHAR(64) NOT NULL UNIQUE, name VARCHAR(160) NOT NULL, username VARCHAR(32) NOT NULL UNIQUE, email VARCHAR(254) NOT NULL UNIQUE, password_hash CHAR(128) NOT NULL, password_salt VARCHAR(64) NOT NULL, pin_hash CHAR(128) NULL, pin_salt VARCHAR(64) NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL) ENGINE=InnoDB`);\n  const [rows] = await pool.query<any[]>("SELECT * FROM super_admin WHERE singleton_id = 1 LIMIT 1");\n  if (rows.length) { const r=rows[0]; cachedSuperAdmin={id:r.id,name:r.name,username:r.username,email:r.email,passwordHash:r.password_hash,passwordSalt:r.password_salt,pinHash:r.pin_hash || undefined,pinSalt:r.pin_salt || undefined,createdAt:r.created_at,updatedAt:r.updated_at}; } else cachedSuperAdmin=null;\n}\n\nexport function isSuperAdminRegistered(): boolean {
   return getSuperAdmin() !== null;
 }
 
-export function createSingleSuperAdmin(params: {
+export async function createSingleSuperAdmin(params: {
   name: string;
   username: string;
   email: string;
@@ -346,19 +347,14 @@ export function createSingleSuperAdmin(params: {
   };
 
   try {
-    fs.writeFileSync(SUPER_ADMIN_FILE, JSON.stringify(record, null, 2), { encoding: "utf-8", flag: "wx" });
+    const pool = getDatabasePool();
+    await pool.execute(`INSERT INTO super_admin (singleton_id,id,name,username,email,password_hash,password_salt,pin_hash,pin_salt,created_at,updated_at) VALUES (1,?,?,?,?,?,?,?,?,?,?)`,
+      [record.id,record.name,record.username,record.email,record.passwordHash,record.passwordSalt,record.pinHash || null,record.pinSalt || null,record.createdAt,record.updatedAt]);
   } catch (err: any) {
-    if (err && err.code === "EEXIST") {
-      reloadSuperAdminFromDisk();
-      return {
-        success: false,
-        status: 403,
-        error: "A Super Administrator account already exists. Additional administrator registrations are locked."
-      };
-    }
-    return { success: false, status: 500, error: "Failed to persist Super Administrator account." };
+    if (err?.code === "ER_DUP_ENTRY") { cachedSuperAdmin = null; return { success:false,status:403,error:"A Super Administrator account already exists. Additional administrator registrations are locked." }; }
+    console.error("Failed to persist Super Administrator in MySQL:", err);
+    return { success:false,status:500,error:"Failed to save Super Administrator to the database. Please try again." };
   }
-
   cachedSuperAdmin = record;
   return {
     success: true,
