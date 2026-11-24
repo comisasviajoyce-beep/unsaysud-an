@@ -40,11 +40,17 @@ import {
 const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads", "dishes");
 const DATA_DIR = path.join(process.cwd(), "data");
 
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-}
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+// Vercel's deployment filesystem is read-only. Local development can create
+// these directories; serverless requests continue using the bundled seed data.
+for (const directory of [UPLOADS_DIR, DATA_DIR]) {
+  if (!fs.existsSync(directory)) {
+    try {
+      fs.mkdirSync(directory, { recursive: true });
+    } catch (error) {
+      if (process.env.VERCEL !== "1") throw error;
+      console.warn(`Storage directory is not writable in this serverless runtime: ${directory}`);
+    }
+  }
 }
 
 const MENU_STORE_FILE = path.join(DATA_DIR, "menu_items.json");
