@@ -282,7 +282,21 @@ export function reloadSuperAdminFromDisk(): SuperAdminRecord | null {
   return getSuperAdmin();
 }
 
-export async function initializeSuperAdminStore(): Promise<void> {\n  const pool = getDatabasePool();\n  await pool.query(`CREATE TABLE IF NOT EXISTS super_admin (singleton_id TINYINT NOT NULL PRIMARY KEY, id VARCHAR(64) NOT NULL UNIQUE, name VARCHAR(160) NOT NULL, username VARCHAR(32) NOT NULL UNIQUE, email VARCHAR(254) NOT NULL UNIQUE, password_hash CHAR(128) NOT NULL, password_salt VARCHAR(64) NOT NULL, pin_hash CHAR(128) NULL, pin_salt VARCHAR(64) NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL) ENGINE=InnoDB`);\n  const [rows] = await pool.query<any[]>("SELECT * FROM super_admin WHERE singleton_id = 1 LIMIT 1");\n  if (rows.length) { const r=rows[0]; cachedSuperAdmin={id:r.id,name:r.name,username:r.username,email:r.email,passwordHash:r.password_hash,passwordSalt:r.password_salt,pinHash:r.pin_hash || undefined,pinSalt:r.pin_salt || undefined,createdAt:r.created_at,updatedAt:r.updated_at}; } else cachedSuperAdmin=null;\n}\n\nexport function isSuperAdminRegistered(): boolean {
+export async function initializeSuperAdminStore(): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.query(`CREATE TABLE IF NOT EXISTS super_admin (
+    singleton_id TINYINT NOT NULL PRIMARY KEY, id VARCHAR(64) NOT NULL UNIQUE,
+    name VARCHAR(160) NOT NULL, username VARCHAR(32) NOT NULL UNIQUE,
+    email VARCHAR(254) NOT NULL UNIQUE, password_hash CHAR(128) NOT NULL,
+    password_salt VARCHAR(64) NOT NULL, pin_hash CHAR(128) NULL, pin_salt VARCHAR(64) NULL,
+    created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL
+  ) ENGINE=InnoDB`);
+  const [rows] = await pool.query<any[]>("SELECT * FROM super_admin WHERE singleton_id = 1 LIMIT 1");
+  if (rows.length) {
+    const r = rows[0];
+    cachedSuperAdmin = { id:r.id, name:r.name, username:r.username, email:r.email, passwordHash:r.password_hash, passwordSalt:r.password_salt, pinHash:r.pin_hash || undefined, pinSalt:r.pin_salt || undefined, createdAt:r.created_at, updatedAt:r.updated_at };
+  } else cachedSuperAdmin = null;
+}\nexport function isSuperAdminRegistered(): boolean {
   return getSuperAdmin() !== null;
 }
 
