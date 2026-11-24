@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import express from "express";
+import { getDatabasePool } from "./config/database";
 import {
   UserSubscription,
   PaymentRecord,
@@ -139,6 +140,51 @@ export function normalizeSubscriptionStatus(status?: string): 'ACTIVE' | 'PENDIN
 
 // In-Memory Database Stores (Strictly backed by real disk state, no demo seeds)
 let adminSettings: AdminPaymentSettings = loadJsonFile(SETTINGS_FILE, defaultSettings);
+
+let subscriptionStoreInitialized = false;
+
+/**
+ * Payment configuration is stored as a single versioned JSON document in MySQL.
+ * The in-memory value is only a per-instance cache; MySQL remains authoritative.
+ */
+export async function initializeSubscriptionDatabaseStore(): Promise<void> {
+  if (subscriptionStoreInitialized) return;
+  const pool = getDatabasePool();
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_settings (
+    setting_key VARCHAR(100) NOT NULL PRIMARY KEY,
+    setting_value JSON NOT NULL,
+    updated_at VARCHAR(40) NOT NULL,
+    updated_by VARCHAR(160) NOT NULL
+  ) ENGINE=InnoDB`);
+  const [rows] = await pool.query<any[]>(
+    "SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1",
+    ["admin_payment_settings"]
+  );
+  if (rows.length > 0) {
+    const value = typeof rows[0].setting_value === "string"
+      ? JSON.parse(rows[0].setting_value)
+      : rows[0].setting_value;
+    adminSettings = { ...defaultSettings, ...value };
+  } else {
+    const now = new Date().toISOString();
+    await pool.execute(
+      "INSERT INTO app_settings (setting_key, setting_value, updated_at, updated_by) VALUES (?, ?, ?, ?)",
+      ["admin_payment_settings", JSON.stringify(adminSettings), now, adminSettings.updatedBy || "System Setup"]
+    );
+  }
+  subscriptionStoreInitialized = true;
+}
+
+async function persistAdminSettings(): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.execute(
+    `INSERT INTO app_settings (setting_key, setting_value, updated_at, updated_by)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value),
+       updated_at = VALUES(updated_at), updated_by = VALUES(updated_by)`,
+    ["admin_payment_settings", JSON.stringify(adminSettings), adminSettings.updatedAt, adminSettings.updatedBy]
+  );
+}
 let payments: PaymentRecord[] = loadJsonFile<PaymentRecord[]>(PAYMENTS_FILE, []).filter(
   p => !p.id.startsWith("pay_demo_")
 );
@@ -1582,7 +1628,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
   });
 
   // 5. Admin: Update Payment Settings, Pricing & Billing Rules
-  app.post("/api/admin/settings", (req, res) => {
+  app.post("/api/admin/settings", async (req, res) => {
     try {
       const admin = requireSuperAdmin(req, res);
       if (!admin) return;
