@@ -1799,6 +1799,7 @@ export async function createApp() {
     const item = menuItems.find(m => m.id === id);
     if (item) {
       item.clicks = (item.clicks || 0) + 1;
+      saveMenuToDisk();
       res.json({ success: true, clicks: item.clicks });
     } else {
       res.status(404).json({ error: "Item not found" });
