@@ -1678,16 +1678,14 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         return res.status(400).json({ error: "Invalid image format for QR code." });
       }
 
-      let ext = matches[1].toLowerCase();
-      if (ext === "jpeg") ext = "jpg";
-      if (ext.includes("svg")) ext = "svg";
-
       const buffer = Buffer.from(matches[2], "base64");
-      const filename = `official_payment_qr_${Date.now()}.${ext}`;
-      const filePath = path.join(ADMIN_ASSETS_DIR, filename);
-      fs.writeFileSync(filePath, buffer);
+      if (!buffer.length || buffer.length > 3 * 1024 * 1024) {
+        return res.status(400).json({ error: "QR code image must be smaller than 3 MB." });
+      }
 
-      const persistentUrl = `/uploads/admin/${filename}`;
+      // Keep the QR image itself in MySQL-backed settings. A Vercel filesystem
+      // path is not durable across deployments or serverless instances.
+      const persistentUrl = dataUrl;
       adminSettings.qrCode.imageUrl = persistentUrl;
       adminSettings.updatedAt = new Date().toISOString();
       adminSettings.updatedBy = admin.username;
@@ -1697,7 +1695,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         "update_settings",
         adminSettings.updatedBy,
         "QR Code",
-        `Uploaded new official payment QR code: ${filename}`
+        "Uploaded and stored official payment QR code in MySQL"
       );
 
       res.json({
