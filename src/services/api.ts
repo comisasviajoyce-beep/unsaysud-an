@@ -1028,8 +1028,18 @@ export async function adminVerifyPaymentAPI(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, rejectionReason, adminUsername })
     });
-    const data = await res.json();
-    if (!res.ok) return { success: false, error: data.error || 'Verification failed' };
+    const responseText = await res.text();
+    let data: any;
+    try {
+      data = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      const preview = responseText.slice(0, 180).replace(/\\s+/g, ' ').trim();
+      return {
+        success: false,
+        error: `Admin verification API returned non-JSON (HTTP ${res.status}). ${preview || 'Empty response'}`
+      };
+    }
+    if (!res.ok) return { success: false, error: data.error || `Verification failed (HTTP ${res.status})` };
     return data;
   } catch (err: any) {
     return { success: false, error: err.message };
