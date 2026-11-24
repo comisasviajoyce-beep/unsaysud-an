@@ -1643,7 +1643,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
       adminSettings.updatedAt = new Date().toISOString();
       adminSettings.updatedBy = admin.username;
 
-      saveJsonFile(SETTINGS_FILE, adminSettings);
+      await persistAdminSettings();
 
       logAuditAction(
         "update_settings",
@@ -1663,7 +1663,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
   });
 
   // 6. Admin: Upload New Official Payment QR Code Image
-  app.post("/api/admin/qr-upload", (req, res) => {
+  app.post("/api/admin/qr-upload", async (req, res) => {
     try {
       const admin = requireSuperAdmin(req, res);
       if (!admin) return;
@@ -1691,7 +1691,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
       adminSettings.qrCode.imageUrl = persistentUrl;
       adminSettings.updatedAt = new Date().toISOString();
       adminSettings.updatedBy = admin.username;
-      saveJsonFile(SETTINGS_FILE, adminSettings);
+      await persistAdminSettings();
 
       logAuditAction(
         "update_settings",
