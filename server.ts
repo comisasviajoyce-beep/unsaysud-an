@@ -655,8 +655,8 @@ export async function createApp() {
   // Initialize persistent account stores before registering routes.
   await initializeStallOwnerStore();
   await initializeSuperAdminStore();
-  await initializeSubscriptionDatabaseStore();
   await initializeAppDataDocumentStore();
+  await initializeSubscriptionDatabaseStore();
 
   // Hydrate application domains from Railway MySQL. Existing local JSON files
   // are used only as a one-time seed when a MySQL document does not exist.
