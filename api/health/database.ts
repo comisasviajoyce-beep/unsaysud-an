@@ -4,8 +4,6 @@ import {
   getMissingDatabaseEnvironment
 } from "../../src/server/config/database";
 
-export const runtime = "nodejs";
-
 export async function GET(): Promise<Response> {
   const missing = getMissingDatabaseEnvironment();
 
