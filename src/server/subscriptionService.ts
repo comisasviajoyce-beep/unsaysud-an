@@ -671,7 +671,7 @@ export function logAuditAction(
 
 export interface MerchantAdminHooks {
   getRegisteredOwners: () => StallOwnerAccount[];
-  setOwnerStatus?: (ownerId: string, status: "active" | "suspended") => StallOwnerAccount | null;
+  setOwnerStatus?: (ownerId: string, status: "active" | "suspended") => Promise<StallOwnerAccount | null> | StallOwnerAccount | null;
 }
 
 export function registerSubscriptionRoutes(app: express.Express, hooks?: MerchantAdminHooks) {
@@ -1244,7 +1244,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
       if (!hooks?.setOwnerStatus) {
         return res.status(500).json({ error: "Merchant status service unavailable." });
       }
-      const updated = hooks.setOwnerStatus(ownerId, nextStatus);
+      const updated = await hooks.setOwnerStatus(ownerId, nextStatus);
       if (!updated) {
         return res.status(404).json({ error: "Merchant account not found." });
       }
