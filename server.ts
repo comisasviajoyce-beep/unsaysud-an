@@ -2292,7 +2292,7 @@ export async function createApp() {
   });
 
   // Bulk Synchronize & Restore Owner Photos from authenticated owner's stall vault
-  app.post("/api/menu/sync-photos", (req, res) => {
+  app.post("/api/menu/sync-photos", async (req, res) => {
     try {
       const session = requireMerchant(req, res);
       if (!session) return;
@@ -2321,10 +2321,10 @@ export async function createApp() {
             const buffer = Buffer.from(matches[2], "base64");
             const timestamp = Date.now();
             const stallSlug = item.stall.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
-            const filename = `stall_${stallSlug}_item_${item.id}_${timestamp}.${ext}`;
-            const targetFilePath = path.join(UPLOADS_DIR, filename);
-            fs.writeFileSync(targetFilePath, buffer);
-            const savedUrl = `/uploads/dishes/${filename}?v=${timestamp}`;
+            const imageId = `img_${stallSlug}_item_${item.id}_${timestamp}`;
+            const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+            await saveAppMedia(imageId, mimeType, buffer, session.ownerId, "public");
+            const savedUrl = `/api/media/${imageId}`;
             item.ownerUploadedImage = savedUrl;
             item.imageUrl = savedUrl;
             updatedCount++;
@@ -2349,7 +2349,7 @@ export async function createApp() {
   });
 
   // Add new menu item to database and persist
-  app.post("/api/menu/add", (req, res) => {
+  app.post("/api/menu/add", async (req, res) => {
     try {
       const { stall, item } = req.body || {};
       if (!item || !stall) {
@@ -2390,18 +2390,17 @@ export async function createApp() {
           const buffer = Buffer.from(matches[2], "base64");
           const timestamp = Date.now();
           const stallSlug = stall.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
-          const filename = `stall_${stallSlug}_item_${newId}_${timestamp}.${ext}`;
           imageId = `img_${stallSlug}_item_${newId}_${timestamp}`;
-          storageId = filename;
+          storageId = imageId;
           uploadTimestamp = timestamp;
-          const targetFilePath = path.join(UPLOADS_DIR, filename);
-          fs.writeFileSync(targetFilePath, buffer);
-          persistentImageUrl = `/uploads/dishes/${filename}?v=${timestamp}`;
+          const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+          await saveAppMedia(imageId, mimeType, buffer, session.ownerId, "public");
+          persistentImageUrl = `/api/media/${imageId}`;
 
           // Register in persistent master owner images registry
           const regRecord: OwnerImageRecord = {
             imageId,
-            storageId: filename,
+            storageId: imageId,
             persistentImageUrl,
             menuId: newId,
             stallName: stall,
@@ -2446,7 +2445,7 @@ export async function createApp() {
   // ==========================================================================
 
   // Permanent Batch Save: Commits all additions, edits, deletions, and photos for authenticated merchant's stall
-  app.post("/api/menu/save-batch", (req, res) => {
+  app.post("/api/menu/save-batch", async (req, res) => {
     try {
       const { stall, items, deletedItemIds, summary } = req.body || {};
       if (!stall || typeof stall !== "string") {
@@ -2562,15 +2561,13 @@ export async function createApp() {
             if (ext === "jpeg") ext = "jpg";
             const buffer = Buffer.from(matches[2], "base64");
             const timestamp = Date.now();
-            const filename = `stall_${stallSlug}_item_${itemId}_${timestamp}.${ext}`;
-            const targetFilePath = path.join(UPLOADS_DIR, filename);
-            fs.writeFileSync(targetFilePath, buffer);
-
-            const persistentUrl = `/uploads/dishes/${filename}?v=${timestamp}`;
             const newImageId = `img_${stallSlug}_item_${itemId}_${timestamp}`;
+            const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+            await saveAppMedia(newImageId, mimeType, buffer, session.ownerId, "public");
+            const persistentUrl = `/api/media/${newImageId}`;
 
             itemImageId = newImageId;
-            itemStorageId = filename;
+            itemStorageId = newImageId;
             itemUploadTimestamp = timestamp;
             itemIsProtected = true;
             itemOwnerImage = persistentUrl;
@@ -2579,7 +2576,7 @@ export async function createApp() {
             // Register in permanent master owner images registry
             const regRecord: OwnerImageRecord = {
               imageId: newImageId,
-              storageId: filename,
+              storageId: newImageId,
               persistentImageUrl: persistentUrl,
               menuId: itemId,
               stallName: stall,
