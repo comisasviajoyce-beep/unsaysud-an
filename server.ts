@@ -630,6 +630,7 @@ export async function createApp() {
   // Initialize persistent account stores before registering routes.
   await initializeStallOwnerStore();
   await initializeSuperAdminStore();
+  await initializeSubscriptionDatabaseStore();
 
   // Register Subscription, Payment, Due Notifications & Super Admin Management Routes
   registerSubscriptionRoutes(app, {
