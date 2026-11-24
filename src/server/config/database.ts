@@ -93,7 +93,7 @@ export async function initializeAppDataDocumentStore(): Promise<void> {
     mime_type VARCHAR(100) NOT NULL,
     media_data LONGBLOB NOT NULL,
     owner_id VARCHAR(160) NOT NULL,
-    visibility ENUM("public", "private") NOT NULL DEFAULT "private",
+    visibility ENUM('public', 'private') NOT NULL DEFAULT "private",
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     INDEX idx_app_media_owner (owner_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
