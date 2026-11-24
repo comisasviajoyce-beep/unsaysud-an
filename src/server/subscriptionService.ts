@@ -1231,7 +1231,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
     }
   });
 
-  app.post("/api/admin/merchants/:id/status", (req, res) => {
+  app.post("/api/admin/merchants/:id/status", async (req, res) => {
     try {
       const admin = requireSuperAdmin(req, res);
       if (!admin) return;
