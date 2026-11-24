@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import express from "express";
-import { getDatabasePool } from "./config/database";
+import { getDatabasePool, loadAppDataDocument, queueAppDataDocumentWrite } from "./config/database";
 import {
   UserSubscription,
   PaymentRecord,
@@ -119,6 +119,8 @@ function saveJsonFile(filePath: string, data: any) {
   // Vercel's /var/task filesystem is read-only and ephemeral. Do not attempt
   // to write JSON-backed runtime state there; persistent records must use a
   // database-backed store instead.
+  const documentName = path.basename(filePath, ".json");
+  queueAppDataDocumentWrite("subscription_" + documentName, data);
   if (IS_VERCEL_RUNTIME) return;
 
   try {
@@ -172,6 +174,12 @@ export async function initializeSubscriptionDatabaseStore(): Promise<void> {
       ["admin_payment_settings", JSON.stringify(adminSettings), now, adminSettings.updatedBy || "System Setup"]
     );
   }
+  // Hydrate and seed the subscription domain collections from durable MySQL documents.
+  payments = await loadAppDataDocument("subscription_payments", payments);
+  notifications = await loadAppDataDocument("subscription_notifications", notifications);
+  auditLogs = await loadAppDataDocument("subscription_audit_logs", auditLogs);
+  subscriptions = (await loadAppDataDocument("subscription_subscriptions", subscriptions)).map(s => ({ ...s, status: normalizeSubscriptionStatus(s.status) }));
+  trials = await loadAppDataDocument("subscription_stall_trials", trials);
   subscriptionStoreInitialized = true;
 }
 
