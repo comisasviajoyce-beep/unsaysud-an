@@ -323,10 +323,12 @@ function loadOwnersData(): StallOwnerRecord[] {
   } catch (err) {
     console.error("Error loading owners from disk:", err);
   }
-  try {
-    fs.writeFileSync(OWNERS_STORE_FILE, JSON.stringify([], null, 2), "utf-8");
-  } catch (err) {
-    console.error("Failed to write empty owners file to disk:", err);
+  if (!(process.env.VERCEL || process.env.VERCEL_ENV || process.cwd().startsWith("/var/task"))) {
+    try {
+      fs.writeFileSync(OWNERS_STORE_FILE, JSON.stringify([], null, 2), "utf-8");
+    } catch (err) {
+      console.error("Failed to write empty owners file to disk:", err);
+    }
   }
   return [];
 }
