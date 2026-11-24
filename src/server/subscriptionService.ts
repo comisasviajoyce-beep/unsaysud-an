@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import express from "express";
-import { getDatabasePool, loadAppDataDocument, queueAppDataDocumentWrite } from "./config/database";
+import { getDatabasePool, loadAppDataDocument, queueAppDataDocumentWrite, saveAppMedia } from "./config/database";
 import {
   UserSubscription,
   PaymentRecord,
@@ -911,7 +911,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
   });
 
   // 3. Submit Payment for Verification (Requires authenticated Merchant matching stallName)
-  app.post("/api/subscription/submit-payment", (req, res) => {
+  app.post("/api/subscription/submit-payment", async (req, res) => {
     try {
       const {
         stallName,
@@ -950,7 +950,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         });
       }
 
-      // Save proof photo to disk
+      // Save payment proof in private MySQL media storage (not Vercel local disk).
       let proofUrl = "/uploads/admin/official_qr.svg";
       if (typeof proofImageDataUrl === "string" && proofImageDataUrl.startsWith("data:image/")) {
         const matches = proofImageDataUrl.match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/i);
@@ -965,10 +965,10 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         }
 
         const stallSlug = stallName.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
-        const filename = `proof_${stallSlug}_${Date.now()}.${ext}`;
-        const filePath = path.join(PROOFS_DIR, filename);
-        fs.writeFileSync(filePath, buffer);
-        proofUrl = `/uploads/proofs/${filename}`;
+        const mediaId = `proof_${stallSlug}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+        await saveAppMedia(mediaId, mimeType, buffer, session.ownerId, "private");
+        proofUrl = `/api/media/${mediaId}`;
       } else if (typeof proofImageDataUrl === "string" && proofImageDataUrl.startsWith("/uploads/")) {
         proofUrl = proofImageDataUrl;
       }
