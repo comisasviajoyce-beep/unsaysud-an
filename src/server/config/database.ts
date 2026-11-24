@@ -1,4 +1,3 @@
-import { attachDatabasePool } from "@vercel/functions";
 import { createPool, type Pool } from "mysql2/promise";
 
 let databasePool: Pool | undefined;
@@ -66,9 +65,6 @@ export function getDatabasePool(): Pool {
     keepAliveInitialDelay: 0,
     ...(config.ssl ? { ssl: { rejectUnauthorized: true } } : {})
   });
-
-  // Vercel uses this hook to close idle MySQL connections before a function suspends.
-  attachDatabasePool(databasePool);
 
   return databasePool;
 }
