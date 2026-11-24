@@ -39,19 +39,9 @@ import {
 const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads", "dishes");
 const DATA_DIR = path.join(process.cwd(), "data");
 
-// Vercel serverless functions run from /var/task, which is read-only.
-// Do not create persistent JSON/upload directories in that runtime.
-const isVercelRuntime =
-  Boolean(process.env.VERCEL || process.env.VERCEL_ENV) ||
-  process.cwd().startsWith("/var/task");
-
-if (!isVercelRuntime) {
-  for (const directory of [UPLOADS_DIR, DATA_DIR]) {
-    if (!fs.existsSync(directory)) {
-      fs.mkdirSync(directory, { recursive: true });
-    }
-  }
-}
+// Do not create local JSON or upload directories during module initialization.
+// Vercel's serverless filesystem is read-only; local storage directories are
+// maintained by the development workspace/repository.
 
 const MENU_STORE_FILE = path.join(DATA_DIR, "menu_items.json");
 const NOTICES_STORE_FILE = path.join(DATA_DIR, "stall_notices.json");
