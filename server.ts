@@ -370,7 +370,17 @@ async function initializeStallOwnerStore(): Promise<void> {
     UNIQUE KEY uq_stall_owners_email (email),
     UNIQUE KEY uq_stall_owners_stall_name (stall_name)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-  const [rows] = await pool.query<any[]>(`SELECT * FROM stall_owners ORDER BY created_at ASC`);
+  let [rows] = await pool.query<any[]>(`SELECT * FROM stall_owners ORDER BY created_at ASC`);
+  // One-time safe backfill: only seed legacy local owner records when MySQL is empty.
+  // Existing database accounts and password hashes are never overwritten.
+  if (rows.length === 0 && stallOwners.length > 0) {
+    for (const owner of stallOwners) {
+      await pool.execute(`INSERT IGNORE INTO stall_owners
+        (id,stall_no,stall_name,owner_name,username,email,contact_number,zone,account_status,password_hash,password_salt,pin_hash,pin_salt,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ownerSqlValues(owner));
+    }
+    [rows] = await pool.query<any[]>(`SELECT * FROM stall_owners ORDER BY created_at ASC`);
+  }
   stallOwners = rows.map((r: any) => ({
     id:r.id, stallNo:r.stall_no, stallName:r.stall_name, ownerName:r.owner_name,
     username:r.username, email:r.email, contactNumber:r.contact_number || undefined,
