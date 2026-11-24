@@ -14,15 +14,50 @@ if (!IS_VERCEL_RUNTIME && !fs.existsSync(DATA_DIR)) {
 
 const SUPER_ADMIN_FILE = path.join(DATA_DIR, "super_admin.json");
 const SECRET_FILE = path.join(DATA_DIR, ".session_secret");
+let sessionSecretCache: string | undefined;
 
 export const MERCHANT_COOKIE_NAME = "unsay_merchant_session";
 export const ADMIN_COOKIE_NAME = "unsay_admin_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days persistent session
 
+export async function initializeSessionSecretStore(): Promise<void> {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 32) {
+    sessionSecretCache = process.env.SESSION_SECRET;
+    return;
+  }
+  const pool = getDatabasePool();
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_secrets (
+    secret_key VARCHAR(100) NOT NULL PRIMARY KEY,
+    secret_value VARCHAR(256) NOT NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+      ON UPDATE CURRENT_TIMESTAMP(3)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  const [rows] = await pool.query<any[]>(
+    "SELECT secret_value FROM app_secrets WHERE secret_key = ? LIMIT 1",
+    ["session_signing_secret"]
+  );
+  if (rows.length > 0) {
+    sessionSecretCache = rows[0].secret_value;
+    return;
+  }
+  const generated = crypto.randomBytes(48).toString("hex");
+  await pool.execute(
+    "INSERT IGNORE INTO app_secrets (secret_key, secret_value) VALUES (?, ?)",
+    ["session_signing_secret", generated]
+  );
+  const [seededRows] = await pool.query<any[]>(
+    "SELECT secret_value FROM app_secrets WHERE secret_key = ? LIMIT 1",
+    ["session_signing_secret"]
+  );
+  if (!seededRows.length) throw new Error("Unable to initialize the shared session signing secret.");
+  sessionSecretCache = seededRows[0].secret_value;
+}
+
 function getSessionSecret(): string {
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 32) {
     return process.env.SESSION_SECRET;
   }
+  if (sessionSecretCache) return sessionSecretCache;
   try {
     if (fs.existsSync(SECRET_FILE)) {
       const existing = fs.readFileSync(SECRET_FILE, "utf-8").trim();
@@ -292,8 +327,22 @@ export async function initializeSuperAdminStore(): Promise<void> {
     created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL
   ) ENGINE=InnoDB`);
   const [rows] = await pool.query<any[]>("SELECT * FROM super_admin WHERE singleton_id = 1 LIMIT 1");
-  if (rows.length) {
-    const r = rows[0];
+  if (!rows.length) {
+    const legacyAdmin = getSuperAdmin();
+    if (legacyAdmin) {
+      await pool.execute(
+        `INSERT IGNORE INTO super_admin
+          (singleton_id,id,name,username,email,password_hash,password_salt,pin_hash,pin_salt,created_at,updated_at)
+         VALUES (1,?,?,?,?,?,?,?,?,?,?)`,
+        [legacyAdmin.id, legacyAdmin.name, legacyAdmin.username, legacyAdmin.email,
+          legacyAdmin.passwordHash, legacyAdmin.passwordSalt, legacyAdmin.pinHash || null,
+          legacyAdmin.pinSalt || null, legacyAdmin.createdAt, legacyAdmin.updatedAt]
+      );
+    }
+  }
+  const [authoritativeRows] = await pool.query<any[]>("SELECT * FROM super_admin WHERE singleton_id = 1 LIMIT 1");
+  if (authoritativeRows.length) {
+    const r = authoritativeRows[0];
     cachedSuperAdmin = { id:r.id, name:r.name, username:r.username, email:r.email, passwordHash:r.password_hash, passwordSalt:r.password_salt, pinHash:r.pin_hash || undefined, pinSalt:r.pin_salt || undefined, createdAt:r.created_at, updatedAt:r.updated_at };
   } else cachedSuperAdmin = null;
 }
