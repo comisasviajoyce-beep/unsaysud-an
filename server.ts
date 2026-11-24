@@ -1998,7 +1998,7 @@ export async function createApp() {
         menuId: item.id,
         stallName: item.stall,
         stallNo: item.stall.split("—")[0].trim(),
-        ownerId: `cred_${item.stall.split("—")[0].trim()}`,
+        ownerId: session.ownerId,
         dishName: item.name,
         dishCategory: item.category,
         dishPrice: item.price,
@@ -2144,7 +2144,7 @@ export async function createApp() {
   });
 
   // Safe Menu Item Deletion (Preserves owner image in vault unless explicitly requested)
-  app.post("/api/menu/:id/delete", (req, res) => {
+  app.post("/api/menu/:id/delete", async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
       const { stall, deleteImagePermanently } = req.body || {};
@@ -2192,7 +2192,11 @@ export async function createApp() {
         }
       }
 
-      // Only delete physical image file if owner explicitly requested permanent file destruction
+      if (deleteImagePermanently === true && item.imageId) {
+        await deleteAppMedia(item.imageId);
+      }
+
+      // Only delete legacy physical image file if owner explicitly requested permanent file destruction
       if (deleteImagePermanently === true && item.ownerUploadedImage && item.ownerUploadedImage.includes("/uploads/dishes/")) {
         const filename = item.ownerUploadedImage.split("?")[0].split("/").pop();
         if (filename) {
@@ -2405,7 +2409,7 @@ export async function createApp() {
             menuId: newId,
             stallName: stall,
             stallNo: stall.split("—")[0].trim(),
-            ownerId: `cred_${stall.split("—")[0].trim()}`,
+            ownerId: session.ownerId,
             dishName: item.name,
             dishCategory: item.category,
             dishPrice: item.price,
@@ -2581,7 +2585,7 @@ export async function createApp() {
               menuId: itemId,
               stallName: stall,
               stallNo: stall.split("—")[0].trim(),
-              ownerId: `cred_${stall.split("—")[0].trim()}`,
+              ownerId: session.ownerId,
               dishName: rawItem.name.trim(),
               dishCategory: rawItem.category,
               dishPrice: Number(rawItem.price),
