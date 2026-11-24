@@ -68,3 +68,74 @@ export function getDatabasePool(): Pool {
 
   return databasePool;
 }
+
+
+/**
+ * Durable JSON document storage for application domains that are naturally
+ * represented as versioned snapshots (menu, sales, analytics, etc.).
+ * MySQL is authoritative; process memory is only a cache.
+ */
+let appDataDocumentStoreReady = false;
+let appDataWriteQueue: Promise<void> = Promise.resolve();
+let appDataWriteError: unknown = null;
+
+export async function initializeAppDataDocumentStore(): Promise<void> {
+  if (appDataDocumentStoreReady) return;
+  const pool = getDatabasePool();
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_data_documents (
+    document_key VARCHAR(120) NOT NULL PRIMARY KEY,
+    document_value JSON NOT NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+      ON UPDATE CURRENT_TIMESTAMP(3)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  appDataDocumentStoreReady = true;
+}
+
+export async function loadAppDataDocument<T>(key: string, fallback: T): Promise<T> {
+  if (!appDataDocumentStoreReady) {
+    throw new Error("Application data document store has not been initialized.");
+  }
+  const pool = getDatabasePool();
+  const [rows] = await pool.query<any[]>(
+    "SELECT document_value FROM app_data_documents WHERE document_key = ? LIMIT 1",
+    [key]
+  );
+  if (rows.length > 0) {
+    const value = rows[0].document_value;
+    return (typeof value === "string" ? JSON.parse(value) : value) as T;
+  }
+  await pool.execute(
+    "INSERT INTO app_data_documents (document_key, document_value) VALUES (?, ?)",
+    [key, JSON.stringify(fallback)]
+  );
+  return fallback;
+}
+
+export function queueAppDataDocumentWrite(key: string, value: unknown): void {
+  if (!appDataDocumentStoreReady) return;
+  const serialized = JSON.stringify(value);
+  appDataWriteQueue = appDataWriteQueue
+    .catch(() => undefined)
+    .then(async () => {
+      const pool = getDatabasePool();
+      await pool.execute(
+        `INSERT INTO app_data_documents (document_key, document_value)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE document_value = VALUES(document_value)`,
+        [key, serialized]
+      );
+    })
+    .catch(error => {
+      appDataWriteError = error;
+      console.error("Failed to persist application data document:", key, error);
+    });
+}
+
+export async function flushAppDataDocumentWrites(): Promise<void> {
+  await appDataWriteQueue;
+  if (appDataWriteError) {
+    const error = appDataWriteError;
+    appDataWriteError = null;
+    throw error;
+  }
+}
