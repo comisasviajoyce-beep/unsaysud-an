@@ -33,9 +33,15 @@ const DATA_DIR = path.join(process.cwd(), "data");
 const PROOFS_DIR = path.join(process.cwd(), "public", "uploads", "proofs");
 const ADMIN_ASSETS_DIR = path.join(process.cwd(), "public", "uploads", "admin");
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!fs.existsSync(PROOFS_DIR)) fs.mkdirSync(PROOFS_DIR, { recursive: true });
-if (!fs.existsSync(ADMIN_ASSETS_DIR)) fs.mkdirSync(ADMIN_ASSETS_DIR, { recursive: true });
+const IS_VERCEL_RUNTIME =
+  Boolean(process.env.VERCEL || process.env.VERCEL_ENV) ||
+  process.cwd().startsWith("/var/task");
+
+if (!IS_VERCEL_RUNTIME) {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(PROOFS_DIR)) fs.mkdirSync(PROOFS_DIR, { recursive: true });
+  if (!fs.existsSync(ADMIN_ASSETS_DIR)) fs.mkdirSync(ADMIN_ASSETS_DIR, { recursive: true });
+}
 
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, "subscriptions.json");
 const TRIALS_FILE = path.join(DATA_DIR, "stall_trials.json");
