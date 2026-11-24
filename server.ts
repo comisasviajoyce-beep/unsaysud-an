@@ -374,20 +374,28 @@ async function initializeStallOwnerStore(): Promise<void> {
   }));
 }
 
-async function persistStallOwner(owner: StallOwnerRecord): Promise<void> {
+function ownerSqlValues(owner: StallOwnerRecord) {
+  return [owner.id,owner.stallNo,owner.stallName,owner.ownerName,owner.username,owner.email,
+    owner.contactNumber || null,owner.zone || null,owner.accountStatus || "active",
+    owner.passwordHash,owner.passwordSalt,owner.pinHash || null,owner.pinSalt || null,
+    owner.createdAt,owner.updatedAt];
+}
+
+async function insertStallOwner(owner: StallOwnerRecord): Promise<void> {
   const pool = getDatabasePool();
   await pool.execute(`INSERT INTO stall_owners
     (id,stall_no,stall_name,owner_name,username,email,contact_number,zone,account_status,password_hash,password_salt,pin_hash,pin_salt,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ON DUPLICATE KEY UPDATE stall_no=VALUES(stall_no), stall_name=VALUES(stall_name),
-    owner_name=VALUES(owner_name), username=VALUES(username), email=VALUES(email),
-    contact_number=VALUES(contact_number), zone=VALUES(zone), account_status=VALUES(account_status),
-    password_hash=VALUES(password_hash), password_salt=VALUES(password_salt),
-    pin_hash=VALUES(pin_hash), pin_salt=VALUES(pin_salt), updated_at=VALUES(updated_at)`,
-    [owner.id,owner.stallNo,owner.stallName,owner.ownerName,owner.username,owner.email,
-     owner.contactNumber || null,owner.zone || null,owner.accountStatus || "active",
-     owner.passwordHash,owner.passwordSalt,owner.pinHash || null,owner.pinSalt || null,
-     owner.createdAt,owner.updatedAt]);
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ownerSqlValues(owner));
+}
+
+async function persistStallOwner(owner: StallOwnerRecord): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.execute(`UPDATE stall_owners SET stall_no=?,stall_name=?,owner_name=?,username=?,email=?,
+    contact_number=?,zone=?,account_status=?,password_hash=?,password_salt=?,pin_hash=?,pin_salt=?,updated_at=?
+    WHERE id=?`, [owner.stallNo,owner.stallName,owner.ownerName,owner.username,owner.email,
+    owner.contactNumber || null,owner.zone || null,owner.accountStatus || "active",
+    owner.passwordHash,owner.passwordSalt,owner.pinHash || null,owner.pinSalt || null,
+    owner.updatedAt,owner.id]);
 }
 
 let menuItems: DishItem[] = loadMenuData();
@@ -807,7 +815,7 @@ export async function createApp() {
       };
 
       try {
-        await persistStallOwner(newOwner);
+        await insertStallOwner(newOwner);
       } catch (dbError: any) {
         if (dbError?.code === "ER_DUP_ENTRY") {
           const message = String(dbError.message || "");
