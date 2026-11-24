@@ -28,6 +28,7 @@ import {
   hashSecret,
   isSuperAdminRegistered,
   initializeSuperAdminStore,
+  initializeSessionSecretStore,
   requireMerchant,
   requireSuperAdmin,
   setSessionCookie,
@@ -664,6 +665,7 @@ export async function createApp() {
 
   // Initialize persistent account stores before registering routes.
   await initializeStallOwnerStore();
+  await initializeSessionSecretStore();
   await initializeSuperAdminStore();
   await initializeAppDataDocumentStore();
   await initializeSubscriptionDatabaseStore();
