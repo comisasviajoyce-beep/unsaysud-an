@@ -1691,9 +1691,13 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         return res.status(400).json({ error: "QR code image must be smaller than 3 MB." });
       }
 
-      // Keep the QR image itself in MySQL-backed settings. A Vercel filesystem
-      // path is not durable across deployments or serverless instances.
-      const persistentUrl = dataUrl;
+      // Store the binary asset once in durable MySQL media storage; settings keep only its URL.
+      const mediaId = `qr_official_${Date.now()}`;
+      const mimeType = matches[1].toLowerCase() === "jpg" || matches[1].toLowerCase() === "jpeg"
+        ? "image/jpeg"
+        : `image/${matches[1].toLowerCase()}`;
+      await saveAppMedia(mediaId, mimeType, buffer, admin.adminId, "public");
+      const persistentUrl = `/api/media/${mediaId}`;
       adminSettings.qrCode.imageUrl = persistentUrl;
       adminSettings.updatedAt = new Date().toISOString();
       adminSettings.updatedBy = admin.username;
