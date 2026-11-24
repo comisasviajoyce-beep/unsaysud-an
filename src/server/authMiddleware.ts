@@ -296,7 +296,9 @@ export async function initializeSuperAdminStore(): Promise<void> {
     const r = rows[0];
     cachedSuperAdmin = { id:r.id, name:r.name, username:r.username, email:r.email, passwordHash:r.password_hash, passwordSalt:r.password_salt, pinHash:r.pin_hash || undefined, pinSalt:r.pin_salt || undefined, createdAt:r.created_at, updatedAt:r.updated_at };
   } else cachedSuperAdmin = null;
-}\nexport function isSuperAdminRegistered(): boolean {
+}
+
+export function isSuperAdminRegistered(): boolean {
   return getSuperAdmin() !== null;
 }
 
