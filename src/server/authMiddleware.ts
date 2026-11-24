@@ -308,9 +308,13 @@ export async function createSingleSuperAdmin(params: {
   email: string;
   password: string;
   pin?: string;
-}): { success: boolean; admin?: Omit<SuperAdminRecord, "passwordHash" | "passwordSalt" | "pinHash" | "pinSalt">; error?: string; status?: number } {
-  // Atomic check on disk + memory to guarantee ONLY ONE Super Admin can ever exist
-  if (reloadSuperAdminFromDisk() !== null) {
+}): Promise<{ success: boolean; admin?: Omit<SuperAdminRecord, "passwordHash" | "passwordSalt" | "pinHash" | "pinSalt">; error?: string; status?: number }> {
+  // Ensure this serverless instance has loaded the authoritative MySQL record.
+  if (cachedSuperAdmin === undefined) {
+    await initializeSuperAdminStore();
+  }
+  // The singleton primary key in MySQL enforces the one-admin rule across instances.
+  if (cachedSuperAdmin !== null) {
     return {
       success: false,
       status: 403,
