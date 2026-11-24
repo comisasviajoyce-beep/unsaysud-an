@@ -13,6 +13,7 @@ import {
   WebsiteVisitorAnalyticsData
 } from "./src/types";
 import {
+  initializeSubscriptionSupabaseState,
   registerSubscriptionRoutes,
   isStallSubscriptionActive,
   ensureStallTrialInitialized,
@@ -540,6 +541,7 @@ async function startServer() {
   // Restore cloud state before accepting requests. Existing local JSON data seeds empty rows.
   if (isSupabaseConfigured()) {
     try {
+      await initializeSubscriptionSupabaseState();
       menuItems = await restoreOrSeedSupabaseState("menu_items", menuItems);
       stallNotices = await restoreOrSeedSupabaseState("stall_notices", stallNotices);
       stallOwners = await restoreOrSeedSupabaseState("stall_owners", stallOwners);

@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import express from "express";
+import { restoreOrSeedSupabaseState, writeSupabaseState } from "./supabaseStore";
 import {
   UserSubscription,
   PaymentRecord,
@@ -111,6 +112,16 @@ function loadJsonFile<T>(filePath: string, defaultVal: T): T {
 function saveJsonFile(filePath: string, data: any) {
   try {
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+    const stateKeyByFile: Record<string, string> = {
+      [SUBSCRIPTIONS_FILE]: "subscriptions",
+      [TRIALS_FILE]: "stall_trials",
+      [PAYMENTS_FILE]: "payments",
+      [NOTIFICATIONS_FILE]: "notifications",
+      [SETTINGS_FILE]: "admin_payment_settings",
+      [AUDIT_LOGS_FILE]: "audit_logs"
+    };
+    const stateKey = stateKeyByFile[filePath];
+    if (stateKey) void writeSupabaseState(stateKey, data).catch(err => console.error(`Supabase ${stateKey} sync failed:`, err));
   } catch (err) {
     console.error(`Failed to save to ${filePath}:`, err);
   }
@@ -140,6 +151,15 @@ let subscriptions: UserSubscription[] = loadJsonFile<UserSubscription[]>(SUBSCRI
   status: normalizeSubscriptionStatus(s.status)
 }));
 let trials: StallTrialRecord[] = loadJsonFile<StallTrialRecord[]>(TRIALS_FILE, []);
+
+export async function initializeSubscriptionSupabaseState(): Promise<void> {
+  adminSettings = await restoreOrSeedSupabaseState("admin_payment_settings", adminSettings);
+  payments = await restoreOrSeedSupabaseState("payments", payments);
+  notifications = await restoreOrSeedSupabaseState("notifications", notifications);
+  auditLogs = await restoreOrSeedSupabaseState("audit_logs", auditLogs);
+  subscriptions = await restoreOrSeedSupabaseState("subscriptions", subscriptions);
+  trials = await restoreOrSeedSupabaseState("stall_trials", trials);
+}
 
 export function ensureStallTrialInitialized(stallName: string, ownerId: string): StallTrialRecord {
   const existing = trials.find(t => t.stallName === stallName);
