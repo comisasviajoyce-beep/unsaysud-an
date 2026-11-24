@@ -113,11 +113,17 @@ export async function loadAppDataDocument<T>(key: string, fallback: T): Promise<
     const value = rows[0].document_value;
     return (typeof value === "string" ? JSON.parse(value) : value) as T;
   }
+  // INSERT IGNORE makes first-run seeding safe when multiple serverless instances start together.
   await pool.execute(
-    "INSERT INTO app_data_documents (document_key, document_value) VALUES (?, ?)",
+    "INSERT IGNORE INTO app_data_documents (document_key, document_value) VALUES (?, ?)",
     [key, JSON.stringify(fallback)]
   );
-  return fallback;
+  const [seededRows] = await pool.query<any[]>(
+    "SELECT document_value FROM app_data_documents WHERE document_key = ? LIMIT 1",
+    [key]
+  );
+  const seededValue = seededRows[0]?.document_value;
+  return (typeof seededValue === "string" ? JSON.parse(seededValue) : seededValue) as T;
 }
 
 export function queueAppDataDocumentWrite(key: string, value: unknown): void {
