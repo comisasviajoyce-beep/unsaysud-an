@@ -1,5 +1,11 @@
+import { createRequire } from "node:module";
 import type { Request, Response } from "express";
-import { createApp } from "../server";
+import type { Express } from "express";
+
+const require = createRequire(import.meta.url);
+const { createApp } = require("../dist/server.cjs") as {
+  createApp: () => Promise<Express>;
+};
 
 // Reuse one initialized Express application for warm serverless invocations.
 let appPromise: ReturnType<typeof createApp> | undefined;
