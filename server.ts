@@ -2,7 +2,6 @@ import express from "express";
 import http from "http";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import { initialMenuDatabase, initialStallNotices, stallCredentials } from "./src/data/initialData";
 import {
   DishItem,
@@ -3090,6 +3089,7 @@ async function startServer() {
   // VITE MIDDLEWARE & STATIC ASSETS
   // ==========================================================================
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
