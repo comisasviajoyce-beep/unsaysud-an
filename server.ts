@@ -19,6 +19,7 @@ import {
   hasStallSubscriptionOrTrialRecord,
   getStallSubscriptionAndTrialInfo
 } from "./src/server/subscriptionService";
+import { restoreOrSeedSupabaseState, writeSupabaseState, isSupabaseConfigured } from "./src/server/supabaseStore";
 import {
   MERCHANT_COOKIE_NAME,
   clearSessionCookie,
@@ -133,6 +134,7 @@ function saveImageRegistry(registry: ImageRegistryData) {
     const dataStr = JSON.stringify(registry, null, 2);
     fs.writeFileSync(IMAGE_REGISTRY_FILE, dataStr, "utf-8");
     fs.writeFileSync(IMAGE_REGISTRY_BACKUP, dataStr, "utf-8");
+    void writeSupabaseState("image_registry", registry).catch(err => console.error("Supabase image registry sync failed:", err));
   } catch (err) {
     console.error("Failed to save image registry to disk:", err);
   }
@@ -168,6 +170,7 @@ function loadMenuVersions(): Record<string, MenuVersionSnapshot[]> {
 function saveMenuVersions(versions: Record<string, MenuVersionSnapshot[]>) {
   try {
     fs.writeFileSync(VERSIONS_STORE_FILE, JSON.stringify(versions, null, 2), "utf-8");
+    void writeSupabaseState("menu_versions", versions).catch(err => console.error("Supabase menu versions sync failed:", err));
   } catch (err) {
     console.error("Failed to save menu versions to disk:", err);
   }
@@ -280,6 +283,7 @@ function loadMenuData(): DishItem[] {
 function saveMenuToDisk() {
   try {
     fs.writeFileSync(MENU_STORE_FILE, JSON.stringify(menuItems, null, 2), "utf-8");
+    void writeSupabaseState("menu_items", menuItems).catch(err => console.error("Supabase menu sync failed:", err));
   } catch (err) {
     console.error("Failed to save menu items to disk:", err);
   }
@@ -308,6 +312,7 @@ function loadNoticesData(): Record<string, string> {
 function saveNoticesToDisk() {
   try {
     fs.writeFileSync(NOTICES_STORE_FILE, JSON.stringify(stallNotices, null, 2), "utf-8");
+    void writeSupabaseState("stall_notices", stallNotices).catch(err => console.error("Supabase notices sync failed:", err));
   } catch (err) {
     console.error("Failed to save notices to disk:", err);
   }
@@ -336,6 +341,7 @@ function loadOwnersData(): StallOwnerRecord[] {
 function saveOwnersToDisk() {
   try {
     fs.writeFileSync(OWNERS_STORE_FILE, JSON.stringify(stallOwners, null, 2), "utf-8");
+    void writeSupabaseState("stall_owners", stallOwners).catch(err => console.error("Supabase owners sync failed:", err));
   } catch (err) {
     console.error("Failed to save owners to disk:", err);
   }
@@ -393,6 +399,7 @@ function loadSalesRecords(): SalesRecord[] {
 function saveSalesRecordsToDisk(records: SalesRecord[]) {
   try {
     fs.writeFileSync(SALES_STORE_FILE, JSON.stringify(records, null, 2), "utf-8");
+    void writeSupabaseState("sales_records", records).catch(err => console.error("Supabase sales sync failed:", err));
   } catch (err) {
     console.error("Failed to save sales records to disk:", err);
   }
@@ -431,6 +438,7 @@ function saveStallAnalyticsToDisk() {
       JSON.stringify({ stallViewLogs, itemViewLogs }, null, 2),
       "utf-8"
     );
+    void writeSupabaseState("stall_analytics", { stallViewLogs, itemViewLogs }).catch(err => console.error("Supabase stall analytics sync failed:", err));
   } catch (err) {
     console.error("Failed to save stall analytics to disk:", err);
   }
@@ -492,6 +500,7 @@ function loadVisitorAnalytics(): VisitorAnalyticsStore {
 function saveVisitorAnalyticsToDisk() {
   try {
     fs.writeFileSync(VISITOR_ANALYTICS_FILE, JSON.stringify(visitorAnalyticsStore, null, 2), "utf-8");
+    void writeSupabaseState("visitor_analytics", visitorAnalyticsStore).catch(err => console.error("Supabase visitor analytics sync failed:", err));
   } catch (err) {
     console.error("Failed to save visitor analytics to disk:", err);
   }
@@ -528,6 +537,26 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   app.set("trust proxy", 1);
 
+  // Restore cloud state before accepting requests. Existing local JSON data seeds empty rows.
+  if (isSupabaseConfigured()) {
+    try {
+      menuItems = await restoreOrSeedSupabaseState("menu_items", menuItems);
+      stallNotices = await restoreOrSeedSupabaseState("stall_notices", stallNotices);
+      stallOwners = await restoreOrSeedSupabaseState("stall_owners", stallOwners);
+      imageRegistry = await restoreOrSeedSupabaseState("image_registry", imageRegistry);
+      menuVersions = await restoreOrSeedSupabaseState("menu_versions", menuVersions);
+      salesRecords = await restoreOrSeedSupabaseState("sales_records", salesRecords);
+      const cloudStallAnalytics = await restoreOrSeedSupabaseState("stall_analytics", { stallViewLogs, itemViewLogs });
+      stallViewLogs = cloudStallAnalytics.stallViewLogs || [];
+      itemViewLogs = cloudStallAnalytics.itemViewLogs || [];
+      const cloudVisitorAnalytics = await restoreOrSeedSupabaseState("visitor_analytics", visitorAnalyticsStore);
+      Object.assign(visitorAnalyticsStore, cloudVisitorAnalytics);
+      console.log("Supabase application state restored.");
+    } catch (err) {
+      console.error("Supabase startup restore failed; continuing with local JSON stores:", err);
+    }
+  }
+
   // Support image file upload payloads up to 25MB
   app.use(express.json({ limit: "25mb" }));
   app.use(express.urlencoded({ extended: true, limit: "25mb" }));
@@ -549,7 +578,7 @@ async function startServer() {
 
   // Health Check
   app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+    res.json({ status: "ok", timestamp: new Date().toISOString(), persistence: isSupabaseConfigured() ? "supabase+local-fallback" : "local-only" });
   });
 
   // Register Subscription, Payment, Due Notifications & Super Admin Management Routes
