@@ -115,6 +115,11 @@ function loadJsonFile<T>(filePath: string, defaultVal: T): T {
 }
 
 function saveJsonFile(filePath: string, data: any) {
+  // Vercel's /var/task filesystem is read-only and ephemeral. Do not attempt
+  // to write JSON-backed runtime state there; persistent records must use a
+  // database-backed store instead.
+  if (IS_VERCEL_RUNTIME) return;
+
   try {
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
   } catch (err) {
