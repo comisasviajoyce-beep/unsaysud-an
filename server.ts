@@ -127,12 +127,12 @@ function loadImageRegistry(): ImageRegistryData {
 }
 
 function saveImageRegistry(registry: ImageRegistryData) {
+  registry.lastUpdated = new Date().toISOString();
+  queueAppDataDocumentWrite("image_registry", registry);
   try {
-    registry.lastUpdated = new Date().toISOString();
     const dataStr = JSON.stringify(registry, null, 2);
     fs.writeFileSync(IMAGE_REGISTRY_FILE, dataStr, "utf-8");
     fs.writeFileSync(IMAGE_REGISTRY_BACKUP, dataStr, "utf-8");
-    queueAppDataDocumentWrite("image_registry", registry);
   } catch (err) {
     console.error("Failed to save image registry to disk:", err);
   }
@@ -166,9 +166,9 @@ function loadMenuVersions(): Record<string, MenuVersionSnapshot[]> {
 }
 
 function saveMenuVersions(versions: Record<string, MenuVersionSnapshot[]>) {
+  queueAppDataDocumentWrite("menu_versions", versions);
   try {
     fs.writeFileSync(VERSIONS_STORE_FILE, JSON.stringify(versions, null, 2), "utf-8");
-    queueAppDataDocumentWrite("menu_versions", versions);
   } catch (err) {
     console.error("Failed to save menu versions to disk:", err);
   }
@@ -279,9 +279,9 @@ function loadMenuData(): DishItem[] {
 }
 
 function saveMenuToDisk() {
+  queueAppDataDocumentWrite("menu_items", menuItems);
   try {
     fs.writeFileSync(MENU_STORE_FILE, JSON.stringify(menuItems, null, 2), "utf-8");
-    queueAppDataDocumentWrite("menu_items", menuItems);
   } catch (err) {
     console.error("Failed to save menu items to disk:", err);
   }
@@ -308,9 +308,9 @@ function loadNoticesData(): Record<string, string> {
 }
 
 function saveNoticesToDisk() {
+  queueAppDataDocumentWrite("stall_notices", stallNotices);
   try {
     fs.writeFileSync(NOTICES_STORE_FILE, JSON.stringify(stallNotices, null, 2), "utf-8");
-    queueAppDataDocumentWrite("stall_notices", stallNotices);
   } catch (err) {
     console.error("Failed to save notices to disk:", err);
   }
@@ -465,9 +465,9 @@ function loadSalesRecords(): SalesRecord[] {
 }
 
 function saveSalesRecordsToDisk(records: SalesRecord[]) {
+  queueAppDataDocumentWrite("sales_records", records);
   try {
     fs.writeFileSync(SALES_STORE_FILE, JSON.stringify(records, null, 2), "utf-8");
-    queueAppDataDocumentWrite("sales_records", records);
   } catch (err) {
     console.error("Failed to save sales records to disk:", err);
   }
@@ -500,13 +500,13 @@ function loadStallAnalytics(): StallAnalyticsStore {
 }
 
 function saveStallAnalyticsToDisk() {
+  queueAppDataDocumentWrite("stall_analytics", { stallViewLogs, itemViewLogs });
   try {
     fs.writeFileSync(
       STALL_ANALYTICS_FILE,
       JSON.stringify({ stallViewLogs, itemViewLogs }, null, 2),
       "utf-8"
     );
-    queueAppDataDocumentWrite("stall_analytics", { stallViewLogs, itemViewLogs });
   } catch (err) {
     console.error("Failed to save stall analytics to disk:", err);
   }
@@ -566,9 +566,9 @@ function loadVisitorAnalytics(): VisitorAnalyticsStore {
 }
 
 function saveVisitorAnalyticsToDisk() {
+  queueAppDataDocumentWrite("visitor_analytics", visitorAnalyticsStore);
   try {
     fs.writeFileSync(VISITOR_ANALYTICS_FILE, JSON.stringify(visitorAnalyticsStore, null, 2), "utf-8");
-    queueAppDataDocumentWrite("visitor_analytics", visitorAnalyticsStore);
   } catch (err) {
     console.error("Failed to save visitor analytics to disk:", err);
   }
