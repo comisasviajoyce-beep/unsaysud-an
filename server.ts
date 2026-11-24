@@ -332,11 +332,62 @@ function loadOwnersData(): StallOwnerRecord[] {
 }
 
 function saveOwnersToDisk() {
+  // JSON remains a local-development fallback only. Railway MySQL is authoritative on Vercel.
+  if (process.env.VERCEL || process.env.VERCEL_ENV || process.cwd().startsWith("/var/task")) return;
   try {
     fs.writeFileSync(OWNERS_STORE_FILE, JSON.stringify(stallOwners, null, 2), "utf-8");
   } catch (err) {
     console.error("Failed to save owners to disk:", err);
   }
+}
+
+async function initializeStallOwnerStore(): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.query(`CREATE TABLE IF NOT EXISTS stall_owners (
+    id VARCHAR(96) NOT NULL PRIMARY KEY,
+    stall_no VARCHAR(80) NOT NULL,
+    stall_name VARCHAR(191) NOT NULL,
+    owner_name VARCHAR(160) NOT NULL,
+    username VARCHAR(32) NOT NULL,
+    email VARCHAR(254) NOT NULL,
+    contact_number VARCHAR(32) NULL,
+    zone VARCHAR(16) NULL,
+    account_status VARCHAR(16) NOT NULL DEFAULT 'active',
+    password_hash CHAR(128) NOT NULL,
+    password_salt VARCHAR(64) NOT NULL,
+    pin_hash CHAR(128) NULL,
+    pin_salt VARCHAR(64) NULL,
+    created_at VARCHAR(40) NOT NULL,
+    updated_at VARCHAR(40) NOT NULL,
+    UNIQUE KEY uq_stall_owners_username (username),
+    UNIQUE KEY uq_stall_owners_email (email),
+    UNIQUE KEY uq_stall_owners_stall_name (stall_name)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  const [rows] = await pool.query<any[]>(`SELECT * FROM stall_owners ORDER BY created_at ASC`);
+  stallOwners = rows.map((r: any) => ({
+    id:r.id, stallNo:r.stall_no, stallName:r.stall_name, ownerName:r.owner_name,
+    username:r.username, email:r.email, contactNumber:r.contact_number || undefined,
+    zone:r.zone || undefined, accountStatus:r.account_status || "active",
+    passwordHash:r.password_hash, passwordSalt:r.password_salt,
+    pinHash:r.pin_hash || undefined, pinSalt:r.pin_salt || undefined,
+    createdAt:r.created_at, updatedAt:r.updated_at
+  }));
+}
+
+async function persistStallOwner(owner: StallOwnerRecord): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.execute(`INSERT INTO stall_owners
+    (id,stall_no,stall_name,owner_name,username,email,contact_number,zone,account_status,password_hash,password_salt,pin_hash,pin_salt,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON DUPLICATE KEY UPDATE stall_no=VALUES(stall_no), stall_name=VALUES(stall_name),
+    owner_name=VALUES(owner_name), username=VALUES(username), email=VALUES(email),
+    contact_number=VALUES(contact_number), zone=VALUES(zone), account_status=VALUES(account_status),
+    password_hash=VALUES(password_hash), password_salt=VALUES(password_salt),
+    pin_hash=VALUES(pin_hash), pin_salt=VALUES(pin_salt), updated_at=VALUES(updated_at)`,
+    [owner.id,owner.stallNo,owner.stallName,owner.ownerName,owner.username,owner.email,
+     owner.contactNumber || null,owner.zone || null,owner.accountStatus || "active",
+     owner.passwordHash,owner.passwordSalt,owner.pinHash || null,owner.pinSalt || null,
+     owner.createdAt,owner.updatedAt]);
 }
 
 let menuItems: DishItem[] = loadMenuData();
@@ -565,17 +616,19 @@ export async function createApp() {
     }
   });
 
-  // Initialize persistent Super Admin storage in Railway MySQL before serving admin routes.
+  // Initialize persistent account stores before registering routes.
+  await initializeStallOwnerStore();
   await initializeSuperAdminStore();
 
   // Register Subscription, Payment, Due Notifications & Super Admin Management Routes
   registerSubscriptionRoutes(app, {
     getRegisteredOwners: () => stallOwners.map(sanitizeOwner),
-    setOwnerStatus: (ownerId: string, status: "active" | "suspended") => {
+    setOwnerStatus: async (ownerId: string, status: "active" | "suspended") => {
       const owner = stallOwners.find(o => o.id === ownerId);
       if (!owner) return null;
       owner.accountStatus = status;
       owner.updatedAt = new Date().toISOString();
+      await persistStallOwner(owner);
       saveOwnersToDisk();
       menuVersion = Date.now();
       return sanitizeOwner(owner);
@@ -625,7 +678,7 @@ export async function createApp() {
   });
 
   // 1. Stall Owner Registration (Independent multi-merchant accounts with duplicate & overwrite protection)
-  app.post("/api/auth/register", (req, res) => {
+  app.post("/api/auth/register", async (req, res) => {
     try {
       if (!verifyCsrfForCookieMutation(req)) {
         return res.status(403).json({ error: "Security check failed. Please refresh and try again." });
@@ -753,6 +806,20 @@ export async function createApp() {
         updatedAt: now
       };
 
+      try {
+        await persistStallOwner(newOwner);
+      } catch (dbError: any) {
+        if (dbError?.code === "ER_DUP_ENTRY") {
+          const message = String(dbError.message || "");
+          const field = message.includes("email") ? "email" : message.includes("stall_name") ? "stall" : "username";
+          return res.status(409).json({ error: field === "email"
+            ? "This email address is already registered to an account."
+            : field === "stall"
+              ? "This cafeteria stall already has a registered owner account. Please choose another stall or register a new stall name."
+              : "This username is already taken. Please choose another username." });
+        }
+        throw dbError;
+      }
       stallOwners.push(newOwner);
       saveOwnersToDisk();
 
@@ -854,7 +921,7 @@ export async function createApp() {
   });
 
   // 3. Forgot Password / Reset with Registered Security PIN
-  app.post("/api/auth/forgot-password", (req, res) => {
+  app.post("/api/auth/forgot-password", async (req, res) => {
     try {
       if (!verifyCsrfForCookieMutation(req)) {
         return res.status(403).json({ error: "Security check failed." });
@@ -882,6 +949,7 @@ export async function createApp() {
       owner.passwordHash = hash;
       owner.passwordSalt = salt;
       owner.updatedAt = new Date().toISOString();
+      await persistStallOwner(owner);
       saveOwnersToDisk();
 
       res.json({ success: true, message: "Password reset successfully. You can now log in." });
@@ -891,7 +959,7 @@ export async function createApp() {
   });
 
   // 4. Update Profile / Security Settings (Authenticated Merchant matching stallName)
-  app.post("/api/auth/update-profile", (req, res) => {
+  app.post("/api/auth/update-profile", async (req, res) => {
     try {
       const { stallName, currentPin, currentPassword, newOwnerName, newContactNumber, newPassword, newPin } = req.body || {};
       if (!stallName) {
@@ -944,6 +1012,7 @@ export async function createApp() {
       }
 
       owner.updatedAt = new Date().toISOString();
+      await persistStallOwner(owner);
       saveOwnersToDisk();
 
       res.json({
