@@ -2,6 +2,7 @@ import express from "express";
 import http from "http";
 import path from "path";
 import fs from "fs";
+import { getDatabasePool } from "./src/server/config/database";
 import { initialMenuDatabase, initialStallNotices, stallCredentials } from "./src/data/initialData";
 import {
   DishItem,
@@ -518,7 +519,7 @@ const siteVisitCooldowns = new Map<string, number>();
   });
 })();
 
-async function startServer() {
+export async function createApp() {
   const app = express();
   const httpServer = http.createServer(app);
   const PORT = Number(process.env.PORT) || 3000;
@@ -543,9 +544,24 @@ async function startServer() {
   const assetsStaticPath = path.join(process.cwd(), "public", "assets");
   app.use("/assets", express.static(assetsStaticPath));
 
-  // Health Check
-  app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  // Health Check: verify the application and its Railway MySQL connection.
+  app.get("/api/health", async (_req, res) => {
+    try {
+      await getDatabasePool().query("SELECT 1");
+      res.json({
+        status: "ok",
+        database: "connected",
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error("Database health check failed:", error);
+      res.status(503).json({
+        status: "error",
+        database: "disconnected",
+        message: "Database connection failed.",
+        timestamp: new Date().toISOString()
+      });
+    }
   });
 
   // Register Subscription, Payment, Due Notifications & Super Admin Management Routes
@@ -3098,9 +3114,18 @@ async function startServer() {
     });
   }
 
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Unsay Sud-an? server running on http://0.0.0.0:${PORT}`);
-  });
+  if (process.env.VERCEL !== "1") {
+    httpServer.listen(PORT, "0.0.0.0", () => {
+      console.log(`Unsay Sud-an? server running on http://0.0.0.0:${PORT}`);
+    });
+  }
+
+  return app;
 }
 
-startServer();
+if (process.env.VERCEL !== "1") {
+  void createApp().catch((error) => {
+    console.error("Failed to start Unsay Sud-an server:", error);
+    process.exitCode = 1;
+  });
+}
