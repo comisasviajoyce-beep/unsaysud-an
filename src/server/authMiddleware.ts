@@ -4,7 +4,10 @@ import path from "path";
 import express from "express";
 
 const DATA_DIR = path.join(process.cwd(), "data");
-if (!fs.existsSync(DATA_DIR)) {
+const IS_VERCEL_RUNTIME =
+  Boolean(process.env.VERCEL || process.env.VERCEL_ENV) ||
+  process.cwd().startsWith("/var/task");
+if (!IS_VERCEL_RUNTIME && !fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
