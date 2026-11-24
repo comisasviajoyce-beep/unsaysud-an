@@ -2,7 +2,7 @@ import express from "express";
 import http from "http";
 import path from "path";
 import fs from "fs";
-import { getDatabasePool, initializeAppDataDocumentStore, loadAppDataDocument, queueAppDataDocumentWrite, flushAppDataDocumentWrites } from "./src/server/config/database";
+import { getDatabasePool, initializeAppDataDocumentStore, loadAppDataDocument, queueAppDataDocumentWrite, flushAppDataDocumentWrites, saveAppMedia, getAppMedia, deleteAppMedia } from "./src/server/config/database";
 import { initialMenuDatabase, initialStallNotices, stallCredentials } from "./src/data/initialData";
 import {
   DishItem,
@@ -657,6 +657,27 @@ export async function createApp() {
   await initializeSuperAdminStore();
   await initializeAppDataDocumentStore();
   await initializeSubscriptionDatabaseStore();
+
+  // Durable media endpoint: menu images are public; payment proofs require the owning merchant or admin.
+  app.get("/api/media/:mediaId", async (req, res) => {
+    try {
+      const media = await getAppMedia(String(req.params.mediaId));
+      if (!media) return res.status(404).json({ error: "Media not found." });
+      if (media.visibility === "private") {
+        const admin = getAdminSession(req);
+        const merchant = getMerchantSession(req);
+        if (!admin && (!merchant || merchant.ownerId !== media.ownerId)) {
+          return res.status(403).json({ error: "You are not authorized to view this media." });
+        }
+      }
+      res.setHeader("Content-Type", media.mimeType);
+      res.setHeader("Cache-Control", media.visibility === "public" ? "public, max-age=31536000, immutable" : "private, no-store");
+      res.send(media.data);
+    } catch (error: any) {
+      console.error("Media retrieval failed:", error);
+      res.status(500).json({ error: "Failed to retrieve media." });
+    }
+  });
 
   // Hydrate application domains from Railway MySQL. Existing local JSON files
   // are used only as a one-time seed when a MySQL document does not exist.
@@ -1849,7 +1870,7 @@ export async function createApp() {
   // ==========================================================================
 
   // Upload, replace, or remove a food photo for a specific stall and menu item
-  app.post("/api/menu/:id/photo", (req, res) => {
+  app.post("/api/menu/:id/photo", async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
       const { stall, dataUrl, remove } = req.body || {};
@@ -1891,7 +1912,11 @@ export async function createApp() {
           }
         }
 
-        // Only delete physical file if stall owner explicitly chose "Delete Image Permanently"
+        if (explicitPermanentDelete === true && previousImageId) {
+          await deleteAppMedia(previousImageId);
+        }
+
+        // Only delete legacy physical file if stall owner explicitly chose "Delete Image Permanently"
         if (explicitPermanentDelete === true && previousImageUrl && previousImageUrl.includes("/uploads/dishes/")) {
           const oldFilename = previousImageUrl.split("?")[0].split("/").pop();
           if (oldFilename) {
@@ -1950,23 +1975,15 @@ export async function createApp() {
       // Generate unique persistent filename and stable imageId
       const timestamp = Date.now();
       const stallSlug = item.stall.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
-      const filename = `stall_${stallSlug}_item_${item.id}_${timestamp}.${ext}`;
       const imageId = `img_${stallSlug}_item_${item.id}_${timestamp}`;
-      const targetFilePath = path.join(UPLOADS_DIR, filename);
+      const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+      await saveAppMedia(imageId, mimeType, buffer, session.ownerId, "public");
 
-      // 1. Write actual image to persistent storage
-      try {
-        fs.writeFileSync(targetFilePath, buffer);
-      } catch (writeErr) {
-        console.error("Failed to write image file to persistent storage:", writeErr);
-        return res.status(500).json({ error: "Photo upload failed. Your previous photo was kept." });
-      }
-
-      // 2. Register in persistent master owner images registry
-      const persistentUrl = `/uploads/dishes/${filename}?v=${timestamp}`;
+      // Register in the MySQL-backed master owner images registry.
+      const persistentUrl = `/api/media/${imageId}`;
       const regRecord: OwnerImageRecord = {
         imageId,
-        storageId: filename,
+        storageId: imageId,
         persistentImageUrl: persistentUrl,
         menuId: item.id,
         stallName: item.stall,
@@ -1991,7 +2008,7 @@ export async function createApp() {
       saveImageRegistry(imageRegistry);
 
       item.imageId = imageId;
-      item.storageId = filename;
+      item.storageId = imageId;
       item.uploadTimestamp = timestamp;
       item.isOwnerImageProtected = true;
       item.ownerUploadedImage = persistentUrl;
@@ -2002,7 +2019,7 @@ export async function createApp() {
         saveMenuToDisk();
       } catch (dbErr) {
         console.error("Failed to update database record for menu photo:", dbErr);
-        try { fs.unlinkSync(targetFilePath); } catch {}
+        try { await deleteAppMedia(imageId); } catch {}
         return res.status(500).json({ error: "We couldn't save the new photo. Please try again." });
       }
 
