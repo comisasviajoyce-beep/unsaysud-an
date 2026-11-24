@@ -2,7 +2,7 @@ import express from "express";
 import http from "http";
 import path from "path";
 import fs from "fs";
-import { getDatabasePool } from "./src/server/config/database";
+import { getDatabasePool, initializeAppDataDocumentStore, loadAppDataDocument, queueAppDataDocumentWrite, flushAppDataDocumentWrites } from "./src/server/config/database";
 import { initialMenuDatabase, initialStallNotices, stallCredentials } from "./src/data/initialData";
 import {
   DishItem,
@@ -132,6 +132,7 @@ function saveImageRegistry(registry: ImageRegistryData) {
     const dataStr = JSON.stringify(registry, null, 2);
     fs.writeFileSync(IMAGE_REGISTRY_FILE, dataStr, "utf-8");
     fs.writeFileSync(IMAGE_REGISTRY_BACKUP, dataStr, "utf-8");
+    queueAppDataDocumentWrite("image_registry", registry);
   } catch (err) {
     console.error("Failed to save image registry to disk:", err);
   }
@@ -167,6 +168,7 @@ function loadMenuVersions(): Record<string, MenuVersionSnapshot[]> {
 function saveMenuVersions(versions: Record<string, MenuVersionSnapshot[]>) {
   try {
     fs.writeFileSync(VERSIONS_STORE_FILE, JSON.stringify(versions, null, 2), "utf-8");
+    queueAppDataDocumentWrite("menu_versions", versions);
   } catch (err) {
     console.error("Failed to save menu versions to disk:", err);
   }
@@ -279,6 +281,7 @@ function loadMenuData(): DishItem[] {
 function saveMenuToDisk() {
   try {
     fs.writeFileSync(MENU_STORE_FILE, JSON.stringify(menuItems, null, 2), "utf-8");
+    queueAppDataDocumentWrite("menu_items", menuItems);
   } catch (err) {
     console.error("Failed to save menu items to disk:", err);
   }
@@ -307,6 +310,7 @@ function loadNoticesData(): Record<string, string> {
 function saveNoticesToDisk() {
   try {
     fs.writeFileSync(NOTICES_STORE_FILE, JSON.stringify(stallNotices, null, 2), "utf-8");
+    queueAppDataDocumentWrite("stall_notices", stallNotices);
   } catch (err) {
     console.error("Failed to save notices to disk:", err);
   }
@@ -453,6 +457,7 @@ function loadSalesRecords(): SalesRecord[] {
 function saveSalesRecordsToDisk(records: SalesRecord[]) {
   try {
     fs.writeFileSync(SALES_STORE_FILE, JSON.stringify(records, null, 2), "utf-8");
+    queueAppDataDocumentWrite("sales_records", records);
   } catch (err) {
     console.error("Failed to save sales records to disk:", err);
   }
@@ -491,6 +496,7 @@ function saveStallAnalyticsToDisk() {
       JSON.stringify({ stallViewLogs, itemViewLogs }, null, 2),
       "utf-8"
     );
+    queueAppDataDocumentWrite("stall_analytics", { stallViewLogs, itemViewLogs });
   } catch (err) {
     console.error("Failed to save stall analytics to disk:", err);
   }
@@ -552,12 +558,13 @@ function loadVisitorAnalytics(): VisitorAnalyticsStore {
 function saveVisitorAnalyticsToDisk() {
   try {
     fs.writeFileSync(VISITOR_ANALYTICS_FILE, JSON.stringify(visitorAnalyticsStore, null, 2), "utf-8");
+    queueAppDataDocumentWrite("visitor_analytics", visitorAnalyticsStore);
   } catch (err) {
     console.error("Failed to save visitor analytics to disk:", err);
   }
 }
 
-const visitorAnalyticsStore: VisitorAnalyticsStore = loadVisitorAnalytics();
+let visitorAnalyticsStore: VisitorAnalyticsStore = loadVisitorAnalytics();
 let lastVisitorDiskSaveMs = 0;
 
 // Deduplication tracking: (key -> last timestamp ms)
@@ -591,6 +598,24 @@ export async function createApp() {
   // Support image file upload payloads up to 25MB
   app.use(express.json({ limit: "25mb" }));
   app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+
+  // Ensure queued MySQL writes complete before an API response reports success.
+  app.use("/api", (req, res, next) => {
+    const originalJson = res.json.bind(res);
+    (res as any).json = (body: any) => {
+      void flushAppDataDocumentWrites()
+        .then(() => originalJson(body))
+        .catch(error => {
+          console.error("Application data persistence failed before response:", error);
+          if (!res.headersSent) {
+            res.status(500);
+            originalJson({ success: false, error: "Data could not be saved to the database. Please retry." });
+          }
+        });
+      return res;
+    };
+    next();
+  });
 
   // Serve persistent uploaded photos statically (404 immediately if file missing so it doesn't fallback to index.html)
   const uploadsStaticPath = path.join(process.cwd(), "public", "uploads");
@@ -631,6 +656,20 @@ export async function createApp() {
   await initializeStallOwnerStore();
   await initializeSuperAdminStore();
   await initializeSubscriptionDatabaseStore();
+  await initializeAppDataDocumentStore();
+
+  // Hydrate application domains from Railway MySQL. Existing local JSON files
+  // are used only as a one-time seed when a MySQL document does not exist.
+  menuItems = await loadAppDataDocument("menu_items", menuItems);
+  stallNotices = await loadAppDataDocument("stall_notices", stallNotices);
+  imageRegistry = await loadAppDataDocument("image_registry", imageRegistry);
+  menuVersions = await loadAppDataDocument("menu_versions", menuVersions);
+  salesRecords = await loadAppDataDocument("sales_records", salesRecords);
+  const storedStallAnalytics = await loadAppDataDocument<StallAnalyticsStore>("stall_analytics", { stallViewLogs, itemViewLogs });
+  stallViewLogs = storedStallAnalytics.stallViewLogs || [];
+  itemViewLogs = storedStallAnalytics.itemViewLogs || [];
+  visitorAnalyticsStore = await loadAppDataDocument("visitor_analytics", visitorAnalyticsStore);
+  seedInitialVersionsIfEmpty();
 
   // Register Subscription, Payment, Due Notifications & Super Admin Management Routes
   registerSubscriptionRoutes(app, {
