@@ -1060,7 +1060,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
   });
 
   // 0B. Initial Single Super Admin Registration (Strictly once only!)
-  app.post("/api/admin/register", (req, res) => {
+  app.post("/api/admin/register", async (req, res) => {
     try {
       if (!verifyCsrfForCookieMutation(req)) {
         return res.status(403).json({ error: "Security check failed." });
@@ -1072,7 +1072,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
       }
 
       const { name, username, email, password, pin } = req.body || {};
-      const result = createSingleSuperAdmin({
+      const result = await createSingleSuperAdmin({
         name: String(name || ""),
         username: String(username || ""),
         email: String(email || ""),
