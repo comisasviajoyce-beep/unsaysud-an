@@ -13,7 +13,8 @@ import {
   WebsiteVisitorAnalyticsData
 } from "./src/types";
 import {
-  registerSubscriptionRoutes,\n  initializeSubscriptionDatabaseStore,
+  registerSubscriptionRoutes,
+  initializeSubscriptionDatabaseStore,
   isStallSubscriptionActive,
   ensureStallTrialInitialized,
   hasStallSubscriptionOrTrialRecord,
