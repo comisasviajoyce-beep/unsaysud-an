@@ -225,6 +225,12 @@ export interface StallCredential {
   stallNo?: string;
   officialName?: string;
   hasRegisteredOwner?: boolean;
+  isActive?: boolean;
+  isPubliclyVisible?: boolean;
+  subscriptionStatus?: string;
+  trialStatus?: string;
+  isTrial?: boolean;
+  isSubscribed?: boolean;
 }
 
 export interface TranslationDictionary {

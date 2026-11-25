@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import express from "express";
+import { getDatabasePool, loadAppDataDocument, queueAppDataDocumentWrite, saveAppMedia } from "./config/database";
 import {
   UserSubscription,
   PaymentRecord,
@@ -33,9 +34,15 @@ const DATA_DIR = path.join(process.cwd(), "data");
 const PROOFS_DIR = path.join(process.cwd(), "public", "uploads", "proofs");
 const ADMIN_ASSETS_DIR = path.join(process.cwd(), "public", "uploads", "admin");
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!fs.existsSync(PROOFS_DIR)) fs.mkdirSync(PROOFS_DIR, { recursive: true });
-if (!fs.existsSync(ADMIN_ASSETS_DIR)) fs.mkdirSync(ADMIN_ASSETS_DIR, { recursive: true });
+const IS_VERCEL_RUNTIME =
+  Boolean(process.env.VERCEL || process.env.VERCEL_ENV) ||
+  process.cwd().startsWith("/var/task");
+
+if (!IS_VERCEL_RUNTIME) {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(PROOFS_DIR)) fs.mkdirSync(PROOFS_DIR, { recursive: true });
+  if (!fs.existsSync(ADMIN_ASSETS_DIR)) fs.mkdirSync(ADMIN_ASSETS_DIR, { recursive: true });
+}
 
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, "subscriptions.json");
 const TRIALS_FILE = path.join(DATA_DIR, "stall_trials.json");
@@ -79,7 +86,7 @@ const defaultSettings: AdminPaymentSettings = {
       price: 100,
       billingCycle: "calendar_month",
       name: "Monthly Plan",
-      description: "₱100 for one full month. Regular renewal deadline is the last day of the calendar month.",
+      description: "₱100 for one full month from activation. Early renewals extend from the current expiration date.",
       isEnabled: true
     }
   },
@@ -109,6 +116,13 @@ function loadJsonFile<T>(filePath: string, defaultVal: T): T {
 }
 
 function saveJsonFile(filePath: string, data: any) {
+  // Vercel's /var/task filesystem is read-only and ephemeral. Do not attempt
+  // to write JSON-backed runtime state there; persistent records must use a
+  // database-backed store instead.
+  const documentName = path.basename(filePath, ".json");
+  queueAppDataDocumentWrite("subscription_" + documentName, data);
+  if (IS_VERCEL_RUNTIME) return;
+
   try {
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
   } catch (err) {
@@ -128,6 +142,97 @@ export function normalizeSubscriptionStatus(status?: string): 'ACTIVE' | 'PENDIN
 
 // In-Memory Database Stores (Strictly backed by real disk state, no demo seeds)
 let adminSettings: AdminPaymentSettings = loadJsonFile(SETTINGS_FILE, defaultSettings);
+
+let subscriptionStoreInitialized = false;
+
+/**
+ * Payment configuration is stored as a single versioned JSON document in MySQL.
+ * The in-memory value is only a per-instance cache; MySQL remains authoritative.
+ */
+export async function initializeSubscriptionDatabaseStore(): Promise<void> {
+  if (subscriptionStoreInitialized) return;
+  const pool = getDatabasePool();
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_settings (
+    setting_key VARCHAR(100) NOT NULL PRIMARY KEY,
+    setting_value JSON NOT NULL,
+    updated_at VARCHAR(40) NOT NULL,
+    updated_by VARCHAR(160) NOT NULL
+  ) ENGINE=InnoDB`);
+  const [rows] = await pool.query<any[]>(
+    "SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1",
+    ["admin_payment_settings"]
+  );
+  if (rows.length > 0) {
+    const value = typeof rows[0].setting_value === "string"
+      ? JSON.parse(rows[0].setting_value)
+      : rows[0].setting_value;
+    adminSettings = { ...defaultSettings, ...value };
+  } else {
+    const now = new Date().toISOString();
+    await pool.execute(
+      "INSERT INTO app_settings (setting_key, setting_value, updated_at, updated_by) VALUES (?, ?, ?, ?)",
+      ["admin_payment_settings", JSON.stringify(adminSettings), now, adminSettings.updatedBy || "System Setup"]
+    );
+  }
+  // Hydrate and seed the subscription domain collections from durable MySQL documents.
+  payments = await loadAppDataDocument("subscription_payments", payments);
+  notifications = await loadAppDataDocument("subscription_notifications", notifications);
+  auditLogs = await loadAppDataDocument("subscription_audit_logs", auditLogs);
+  subscriptions = (await loadAppDataDocument("subscription_subscriptions", subscriptions)).map(s => ({ ...s, status: normalizeSubscriptionStatus(s.status) }));
+  trials = await loadAppDataDocument("subscription_stall_trials", trials);
+
+  // One-time, narrowly scoped repair for the known Swirly Bits record.
+  // Compare dates in Philippine local time because ISO timestamps may be UTC.
+  let repairedSwirlyBitsExpiry = false;
+  const phDate = (value: string | undefined) => value
+    ? new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value))
+    : "";
+  for (const sub of subscriptions) {
+    const isSwirlyBits = /swirly\s*bits/i.test(sub.stallName || "");
+    const startDay = phDate(sub.startDate);
+    const expiryDay = phDate(sub.expirationDate);
+    if (
+      isSwirlyBits &&
+      sub.plan === "monthly" &&
+      normalizeSubscriptionStatus(sub.status) === "ACTIVE" &&
+      startDay >= "2026-11-24" &&
+      startDay <= "2026-11-26" &&
+      expiryDay >= "2026-11-30" &&
+      expiryDay <= "2026-12-02"
+    ) {
+      const correctedExpiry = new Date(sub.startDate);
+      correctedExpiry.setUTCMonth(correctedExpiry.getUTCMonth() + 1);
+      sub.expirationDate = correctedExpiry.toISOString();
+      sub.nextDueDate = correctedExpiry.toISOString();
+      sub.billingCycle = "calendar_month";
+      sub.updatedAt = new Date().toISOString();
+      repairedSwirlyBitsExpiry = true;
+    }
+  }
+  if (repairedSwirlyBitsExpiry) {
+    // Persist directly and await MySQL confirmation before the app serves
+    // subscription data; do not rely on a deferred response write queue.
+    await pool.execute(
+      `INSERT INTO app_data_documents (document_key, document_value)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE document_value = VALUES(document_value)`,
+      ["subscription_subscriptions", JSON.stringify(subscriptions)]
+    );
+  }
+
+  subscriptionStoreInitialized = true;
+}
+
+async function persistAdminSettings(): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.execute(
+    `INSERT INTO app_settings (setting_key, setting_value, updated_at, updated_by)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value),
+       updated_at = VALUES(updated_at), updated_by = VALUES(updated_by)`,
+    ["admin_payment_settings", JSON.stringify(adminSettings), adminSettings.updatedAt, adminSettings.updatedBy]
+  );
+}
 let payments: PaymentRecord[] = loadJsonFile<PaymentRecord[]>(PAYMENTS_FILE, []).filter(
   p => !p.id.startsWith("pay_demo_")
 );
@@ -167,6 +272,111 @@ export function ensureStallTrialInitialized(stallName: string, ownerId: string):
   return created;
 }
 
+/**
+ * Starts the one-time 14-day trial for a newly registered stall owner.
+ * The trial is stored in the same durable subscription documents as manual
+ * trial activation, and an existing trial is never restarted.
+ */
+export function activateStallFreeTrial(stallName: string, ownerId: string) {
+  const cleanStallName = String(stallName || "").trim();
+  if (!cleanStallName) return { success: false, error: "Stall name is required." };
+
+  let trial = trials.find(t => t.stallName === cleanStallName);
+  if (!trial) {
+    trial = ensureStallTrialInitialized(cleanStallName, ownerId);
+  }
+
+  const existingSub = subscriptions.find(s => s.stallName === cleanStallName);
+  if (existingSub && normalizeSubscriptionStatus(existingSub.status) === "SUSPENDED") {
+    return { success: false, error: "This stall account is suspended." };
+  }
+  if (existingSub && normalizeSubscriptionStatus(existingSub.status) === "ACTIVE" &&
+      !existingSub.isTrial && new Date(existingSub.expirationDate).getTime() > Date.now()) {
+    return { success: false, error: "This stall already has an active paid subscription." };
+  }
+  if (trial.startDate && trial.endDate) {
+    const endMs = new Date(trial.endDate).getTime();
+    const active = endMs > Date.now();
+    return {
+      success: active,
+      alreadyUsed: true,
+      error: active ? undefined : "The free trial for this stall has already expired and cannot be restarted.",
+      trialStatus: active ? "Trial Active" as const : "Trial Expired" as const,
+      trialStartDate: trial.startDate,
+      trialEndDate: trial.endDate,
+      trialDaysRemaining: active ? Math.max(1, Math.ceil((endMs - Date.now()) / 86400000)) : 0
+    };
+  }
+
+  const now = new Date();
+  const startDate = now.toISOString();
+  const endDate = new Date(now.getTime() + 14 * 86400000).toISOString();
+  trial.ownerId = ownerId;
+  trial.trialStatus = "Trial Active";
+  trial.startDate = startDate;
+  trial.endDate = endDate;
+  trial.durationDays = 14;
+  trial.updatedAt = startDate;
+  saveJsonFile(TRIALS_FILE, trials);
+
+  let sub = existingSub;
+  if (!sub) {
+    sub = {
+      id: `sub_trial_${cleanStallName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
+      stallName: cleanStallName,
+      ownerId,
+      plan: "trial",
+      status: "Active",
+      isTrial: true,
+      trialStartDate: startDate,
+      trialEndDate: endDate,
+      trialStatus: "Trial Active",
+      startDate,
+      expirationDate: endDate,
+      nextDueDate: endDate,
+      billingCycle: "weekly",
+      autoRenewReminder: true,
+      updatedAt: startDate,
+      createdAt: startDate
+    };
+    subscriptions.push(sub);
+  } else {
+    sub.ownerId = ownerId;
+    sub.status = "Active";
+    sub.plan = "trial";
+    sub.isTrial = true;
+    sub.trialStartDate = startDate;
+    sub.trialEndDate = endDate;
+    sub.trialStatus = "Trial Active";
+    sub.startDate = startDate;
+    sub.expirationDate = endDate;
+    sub.nextDueDate = endDate;
+    sub.updatedAt = startDate;
+  }
+  saveJsonFile(SUBSCRIPTIONS_FILE, subscriptions);
+
+  notifications.unshift({
+    id: `notif_${Date.now()}_trial_welcome`,
+    recipientType: "stall",
+    recipientId: cleanStallName,
+    title: "Free 14-Day Trial Activated!",
+    message: `Welcome! Your 14-day free trial is active until ${new Date(endDate).toLocaleDateString()}. You can now manage your menu, photos, prices, and sales tracker.`,
+    type: "access_granted",
+    isRead: false,
+    link: "portal",
+    createdAt: startDate
+  });
+  saveJsonFile(NOTIFICATIONS_FILE, notifications);
+
+  return {
+    success: true,
+    trialStatus: "Trial Active" as const,
+    trialStartDate: startDate,
+    trialEndDate: endDate,
+    trialDaysRemaining: 14
+  };
+}
+
 export function hasStallSubscriptionOrTrialRecord(stallName: string): boolean {
   return (
     subscriptions.some(s => s.stallName === stallName) ||
@@ -202,19 +412,18 @@ export function computeNextExpiration(
   } else {
     // Monthly Plan
     if (billingCycle === "calendar_month") {
+      // A monthly subscription lasts one full calendar month from activation
+      // (or from the current expiry when renewing early). Do not align it to
+      // the end of the current calendar month, which can incorrectly grant
+      // only a few days when payment is made late in the month.
       const year = baseDate.getFullYear();
       const month = baseDate.getMonth();
       const day = baseDate.getDate();
-
-      // If baseDate is already at the last day of the month or near end, roll to next month's last day
-      const lastDayOfCurrentMonth = new Date(year, month + 1, 0).getDate();
-      if (day >= lastDayOfCurrentMonth - 3) {
-        // Aligned to last day of next month at 23:59:59
-        expDate = new Date(year, month + 2, 0, 23, 59, 59, 999);
-      } else {
-        // Aligned to last day of current month at 23:59:59
-        expDate = new Date(year, month + 1, 0, 23, 59, 59, 999);
-      }
+      const targetMonthLastDay = new Date(year, month + 2, 0).getDate();
+      expDate = new Date(baseDate);
+      expDate.setDate(1);
+      expDate.setMonth(month + 1);
+      expDate.setDate(Math.min(day, targetMonthLastDay));
     } else {
       // Exact 30 days
       expDate = new Date(baseDate.getTime() + 30 * 24 * 60 * 60 * 1000);
@@ -510,8 +719,13 @@ export function getStallSubscriptionAndTrialInfo(stallName: string) {
     };
   }
 
-  // 2. Check if pending verification
-  if (normSubStatus === 'PENDING') {
+  // A valid trial remains active even if a renewal payment is pending.
+  const activeTrialExists = Boolean(
+    trial.startDate && trial.endDate && new Date(trial.endDate).getTime() > now
+  );
+
+  // 2. Check if pending verification only when no valid trial is running.
+  if (normSubStatus === 'PENDING' && !activeTrialExists) {
     return {
       hasSubscription: true,
       status: 'PENDING' as const,
@@ -529,7 +743,7 @@ export function getStallSubscriptionAndTrialInfo(stallName: string) {
   }
 
   // 3. Check if stall has an active verified paid subscription
-  const isPaidActive = sub && normSubStatus === "ACTIVE" && !sub.isTrial && new Date(sub.expirationDate).getTime() > now;
+  const isPaidActive = sub && normSubStatus === "ACTIVE" && sub.plan !== "trial" && new Date(sub.expirationDate).getTime() > now;
 
   let trialStatus: TrialStatus = trial.trialStatus;
   let isTrial = false;
@@ -588,10 +802,7 @@ export function isStallSubscriptionActive(stallName: string): {
 
   const info = getStallSubscriptionAndTrialInfo(stallName);
 
-  if (info.status === 'ACTIVE') {
-    return { active: true, status: 'ACTIVE', subscription: info.subscription };
-  }
-
+  // An administrator suspension always overrides any trial or paid access.
   if (info.status === 'SUSPENDED') {
     return {
       active: false,
@@ -599,6 +810,23 @@ export function isStallSubscriptionActive(stallName: string): {
       reason: "Stall portal access and menu listings are suspended by the administrator.",
       subscription: info.subscription
     };
+  }
+
+  // A valid 14-day trial must remain fully usable even if the owner has also
+  // submitted a renewal payment that is still pending admin verification.
+  // The status lookup reports PENDING first, so validate the trial dates here.
+  const trialEndTime = info.trialEndDate ? new Date(info.trialEndDate).getTime() : 0;
+  const hasActiveTrial =
+    info.trialStatus === "Trial Active" &&
+    Number.isFinite(trialEndTime) &&
+    trialEndTime > Date.now();
+
+  if (hasActiveTrial) {
+    return { active: true, status: 'ACTIVE', subscription: info.subscription };
+  }
+
+  if (info.status === 'ACTIVE') {
+    return { active: true, status: 'ACTIVE', subscription: info.subscription };
   }
 
   if (info.status === 'PENDING') {
@@ -660,7 +888,7 @@ export function logAuditAction(
 
 export interface MerchantAdminHooks {
   getRegisteredOwners: () => StallOwnerAccount[];
-  setOwnerStatus?: (ownerId: string, status: "active" | "suspended") => StallOwnerAccount | null;
+  setOwnerStatus?: (ownerId: string, status: "active" | "suspended") => Promise<StallOwnerAccount | null> | StallOwnerAccount | null;
 }
 
 export function registerSubscriptionRoutes(app: express.Express, hooks?: MerchantAdminHooks) {
@@ -846,7 +1074,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
   });
 
   // 3. Submit Payment for Verification (Requires authenticated Merchant matching stallName)
-  app.post("/api/subscription/submit-payment", (req, res) => {
+  app.post("/api/subscription/submit-payment", async (req, res) => {
     try {
       const {
         stallName,
@@ -885,7 +1113,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         });
       }
 
-      // Save proof photo to disk
+      // Save payment proof in private MySQL media storage (not Vercel local disk).
       let proofUrl = "/uploads/admin/official_qr.svg";
       if (typeof proofImageDataUrl === "string" && proofImageDataUrl.startsWith("data:image/")) {
         const matches = proofImageDataUrl.match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/i);
@@ -900,10 +1128,10 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         }
 
         const stallSlug = stallName.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
-        const filename = `proof_${stallSlug}_${Date.now()}.${ext}`;
-        const filePath = path.join(PROOFS_DIR, filename);
-        fs.writeFileSync(filePath, buffer);
-        proofUrl = `/uploads/proofs/${filename}`;
+        const mediaId = `proof_${stallSlug}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+        await saveAppMedia(mediaId, mimeType, buffer, session.ownerId, "private");
+        proofUrl = `/api/media/${mediaId}`;
       } else if (typeof proofImageDataUrl === "string" && proofImageDataUrl.startsWith("/uploads/")) {
         proofUrl = proofImageDataUrl;
       }
@@ -1054,7 +1282,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
   });
 
   // 0B. Initial Single Super Admin Registration (Strictly once only!)
-  app.post("/api/admin/register", (req, res) => {
+  app.post("/api/admin/register", async (req, res) => {
     try {
       if (!verifyCsrfForCookieMutation(req)) {
         return res.status(403).json({ error: "Security check failed." });
@@ -1066,7 +1294,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
       }
 
       const { name, username, email, password, pin } = req.body || {};
-      const result = createSingleSuperAdmin({
+      const result = await createSingleSuperAdmin({
         name: String(name || ""),
         username: String(username || ""),
         email: String(email || ""),
@@ -1220,7 +1448,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
     }
   });
 
-  app.post("/api/admin/merchants/:id/status", (req, res) => {
+  app.post("/api/admin/merchants/:id/status", async (req, res) => {
     try {
       const admin = requireSuperAdmin(req, res);
       if (!admin) return;
@@ -1233,7 +1461,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
       if (!hooks?.setOwnerStatus) {
         return res.status(500).json({ error: "Merchant status service unavailable." });
       }
-      const updated = hooks.setOwnerStatus(ownerId, nextStatus);
+      const updated = await hooks.setOwnerStatus(ownerId, nextStatus);
       if (!updated) {
         return res.status(404).json({ error: "Merchant account not found." });
       }
@@ -1308,11 +1536,24 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         } else {
           sub.plan = payment.plan;
           sub.status = "ACTIVE";
+          // Payment approval converts a trial record into a verified paid subscription.
+          // Clear the trial marker so the authoritative status checker recognizes it.
+          sub.isTrial = false;
+          sub.isPaidSubscription = true;
+          sub.trialStatus = "Subscribed";
           sub.startDate = startDate.toISOString();
           sub.expirationDate = expirationDate.toISOString();
           sub.nextDueDate = nextDueDate.toISOString();
           sub.lastPaymentId = payment.id;
           sub.updatedAt = now.toISOString();
+        }
+
+        // Keep the standalone trial record in sync after a successful paid conversion.
+        const convertedTrial = trials.find(t => t.stallName === payment.stallName);
+        if (convertedTrial) {
+          convertedTrial.trialStatus = "Subscribed";
+          convertedTrial.updatedAt = now.toISOString();
+          saveJsonFile(TRIALS_FILE, trials);
         }
 
         payment.subscriptionExtendedTo = expirationDate.toISOString();
@@ -1571,7 +1812,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
   });
 
   // 5. Admin: Update Payment Settings, Pricing & Billing Rules
-  app.post("/api/admin/settings", (req, res) => {
+  app.post("/api/admin/settings", async (req, res) => {
     try {
       const admin = requireSuperAdmin(req, res);
       if (!admin) return;
@@ -1586,7 +1827,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
       adminSettings.updatedAt = new Date().toISOString();
       adminSettings.updatedBy = admin.username;
 
-      saveJsonFile(SETTINGS_FILE, adminSettings);
+      await persistAdminSettings();
 
       logAuditAction(
         "update_settings",
@@ -1606,7 +1847,7 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
   });
 
   // 6. Admin: Upload New Official Payment QR Code Image
-  app.post("/api/admin/qr-upload", (req, res) => {
+  app.post("/api/admin/qr-upload", async (req, res) => {
     try {
       const admin = requireSuperAdmin(req, res);
       if (!admin) return;
@@ -1621,26 +1862,28 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         return res.status(400).json({ error: "Invalid image format for QR code." });
       }
 
-      let ext = matches[1].toLowerCase();
-      if (ext === "jpeg") ext = "jpg";
-      if (ext.includes("svg")) ext = "svg";
-
       const buffer = Buffer.from(matches[2], "base64");
-      const filename = `official_payment_qr_${Date.now()}.${ext}`;
-      const filePath = path.join(ADMIN_ASSETS_DIR, filename);
-      fs.writeFileSync(filePath, buffer);
+      if (!buffer.length || buffer.length > 3 * 1024 * 1024) {
+        return res.status(400).json({ error: "QR code image must be smaller than 3 MB." });
+      }
 
-      const persistentUrl = `/uploads/admin/${filename}`;
+      // Store the binary asset once in durable MySQL media storage; settings keep only its URL.
+      const mediaId = `qr_official_${Date.now()}`;
+      const mimeType = matches[1].toLowerCase() === "jpg" || matches[1].toLowerCase() === "jpeg"
+        ? "image/jpeg"
+        : `image/${matches[1].toLowerCase()}`;
+      await saveAppMedia(mediaId, mimeType, buffer, admin.adminId, "public");
+      const persistentUrl = `/api/media/${mediaId}`;
       adminSettings.qrCode.imageUrl = persistentUrl;
       adminSettings.updatedAt = new Date().toISOString();
       adminSettings.updatedBy = admin.username;
-      saveJsonFile(SETTINGS_FILE, adminSettings);
+      await persistAdminSettings();
 
       logAuditAction(
         "update_settings",
         adminSettings.updatedBy,
         "QR Code",
-        `Uploaded new official payment QR code: ${filename}`
+        "Uploaded and stored official payment QR code in MySQL"
       );
 
       res.json({

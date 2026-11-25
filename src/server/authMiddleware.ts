@@ -2,23 +2,62 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import express from "express";
+import { getDatabasePool } from "./config/database";
 
 const DATA_DIR = path.join(process.cwd(), "data");
-if (!fs.existsSync(DATA_DIR)) {
+const IS_VERCEL_RUNTIME =
+  Boolean(process.env.VERCEL || process.env.VERCEL_ENV) ||
+  process.cwd().startsWith("/var/task");
+if (!IS_VERCEL_RUNTIME && !fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
 const SUPER_ADMIN_FILE = path.join(DATA_DIR, "super_admin.json");
 const SECRET_FILE = path.join(DATA_DIR, ".session_secret");
+let sessionSecretCache: string | undefined;
 
 export const MERCHANT_COOKIE_NAME = "unsay_merchant_session";
 export const ADMIN_COOKIE_NAME = "unsay_admin_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days persistent session
 
+export async function initializeSessionSecretStore(): Promise<void> {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 32) {
+    sessionSecretCache = process.env.SESSION_SECRET;
+    return;
+  }
+  const pool = getDatabasePool();
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_secrets (
+    secret_key VARCHAR(100) NOT NULL PRIMARY KEY,
+    secret_value VARCHAR(256) NOT NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+      ON UPDATE CURRENT_TIMESTAMP(3)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  const [rows] = await pool.query<any[]>(
+    "SELECT secret_value FROM app_secrets WHERE secret_key = ? LIMIT 1",
+    ["session_signing_secret"]
+  );
+  if (rows.length > 0) {
+    sessionSecretCache = rows[0].secret_value;
+    return;
+  }
+  const generated = crypto.randomBytes(48).toString("hex");
+  await pool.execute(
+    "INSERT IGNORE INTO app_secrets (secret_key, secret_value) VALUES (?, ?)",
+    ["session_signing_secret", generated]
+  );
+  const [seededRows] = await pool.query<any[]>(
+    "SELECT secret_value FROM app_secrets WHERE secret_key = ? LIMIT 1",
+    ["session_signing_secret"]
+  );
+  if (!seededRows.length) throw new Error("Unable to initialize the shared session signing secret.");
+  sessionSecretCache = seededRows[0].secret_value;
+}
+
 function getSessionSecret(): string {
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 32) {
     return process.env.SESSION_SECRET;
   }
+  if (sessionSecretCache) return sessionSecretCache;
   try {
     if (fs.existsSync(SECRET_FILE)) {
       const existing = fs.readFileSync(SECRET_FILE, "utf-8").trim();
@@ -278,19 +317,53 @@ export function reloadSuperAdminFromDisk(): SuperAdminRecord | null {
   return getSuperAdmin();
 }
 
+export async function initializeSuperAdminStore(): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.query(`CREATE TABLE IF NOT EXISTS super_admin (
+    singleton_id TINYINT NOT NULL PRIMARY KEY, id VARCHAR(64) NOT NULL UNIQUE,
+    name VARCHAR(160) NOT NULL, username VARCHAR(32) NOT NULL UNIQUE,
+    email VARCHAR(254) NOT NULL UNIQUE, password_hash CHAR(128) NOT NULL,
+    password_salt VARCHAR(64) NOT NULL, pin_hash CHAR(128) NULL, pin_salt VARCHAR(64) NULL,
+    created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL
+  ) ENGINE=InnoDB`);
+  const [rows] = await pool.query<any[]>("SELECT * FROM super_admin WHERE singleton_id = 1 LIMIT 1");
+  if (!rows.length) {
+    const legacyAdmin = getSuperAdmin();
+    if (legacyAdmin) {
+      await pool.execute(
+        `INSERT IGNORE INTO super_admin
+          (singleton_id,id,name,username,email,password_hash,password_salt,pin_hash,pin_salt,created_at,updated_at)
+         VALUES (1,?,?,?,?,?,?,?,?,?,?)`,
+        [legacyAdmin.id, legacyAdmin.name, legacyAdmin.username, legacyAdmin.email,
+          legacyAdmin.passwordHash, legacyAdmin.passwordSalt, legacyAdmin.pinHash || null,
+          legacyAdmin.pinSalt || null, legacyAdmin.createdAt, legacyAdmin.updatedAt]
+      );
+    }
+  }
+  const [authoritativeRows] = await pool.query<any[]>("SELECT * FROM super_admin WHERE singleton_id = 1 LIMIT 1");
+  if (authoritativeRows.length) {
+    const r = authoritativeRows[0];
+    cachedSuperAdmin = { id:r.id, name:r.name, username:r.username, email:r.email, passwordHash:r.password_hash, passwordSalt:r.password_salt, pinHash:r.pin_hash || undefined, pinSalt:r.pin_salt || undefined, createdAt:r.created_at, updatedAt:r.updated_at };
+  } else cachedSuperAdmin = null;
+}
+
 export function isSuperAdminRegistered(): boolean {
   return getSuperAdmin() !== null;
 }
 
-export function createSingleSuperAdmin(params: {
+export async function createSingleSuperAdmin(params: {
   name: string;
   username: string;
   email: string;
   password: string;
   pin?: string;
-}): { success: boolean; admin?: Omit<SuperAdminRecord, "passwordHash" | "passwordSalt" | "pinHash" | "pinSalt">; error?: string; status?: number } {
-  // Atomic check on disk + memory to guarantee ONLY ONE Super Admin can ever exist
-  if (reloadSuperAdminFromDisk() !== null) {
+}): Promise<{ success: boolean; admin?: Omit<SuperAdminRecord, "passwordHash" | "passwordSalt" | "pinHash" | "pinSalt">; error?: string; status?: number }> {
+  // Ensure this serverless instance has loaded the authoritative MySQL record.
+  if (cachedSuperAdmin === undefined) {
+    await initializeSuperAdminStore();
+  }
+  // The singleton primary key in MySQL enforces the one-admin rule across instances.
+  if (cachedSuperAdmin !== null) {
     return {
       success: false,
       status: 403,
@@ -343,19 +416,14 @@ export function createSingleSuperAdmin(params: {
   };
 
   try {
-    fs.writeFileSync(SUPER_ADMIN_FILE, JSON.stringify(record, null, 2), { encoding: "utf-8", flag: "wx" });
+    const pool = getDatabasePool();
+    await pool.execute(`INSERT INTO super_admin (singleton_id,id,name,username,email,password_hash,password_salt,pin_hash,pin_salt,created_at,updated_at) VALUES (1,?,?,?,?,?,?,?,?,?,?)`,
+      [record.id,record.name,record.username,record.email,record.passwordHash,record.passwordSalt,record.pinHash || null,record.pinSalt || null,record.createdAt,record.updatedAt]);
   } catch (err: any) {
-    if (err && err.code === "EEXIST") {
-      reloadSuperAdminFromDisk();
-      return {
-        success: false,
-        status: 403,
-        error: "A Super Administrator account already exists. Additional administrator registrations are locked."
-      };
-    }
-    return { success: false, status: 500, error: "Failed to persist Super Administrator account." };
+    if (err?.code === "ER_DUP_ENTRY") { cachedSuperAdmin = null; return { success:false,status:403,error:"A Super Administrator account already exists. Additional administrator registrations are locked." }; }
+    console.error("Failed to persist Super Administrator in MySQL:", err);
+    return { success:false,status:500,error:"Failed to save Super Administrator to the database. Please try again." };
   }
-
   cachedSuperAdmin = record;
   return {
     success: true,

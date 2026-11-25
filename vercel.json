@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/subscription/status/:stallName",
+      "destination": "/api/menu?__apiPath=/api/subscription/status/:stallName"
+    },
+    {
+      "source": "/api/menu/:menuPath*",
+      "destination": "/api/menu?__menuPath=:menuPath*"
+    }
+  ]
+}

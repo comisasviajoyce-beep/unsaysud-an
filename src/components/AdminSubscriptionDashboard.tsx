@@ -78,6 +78,7 @@ export const AdminSubscriptionDashboard: React.FC<AdminSubscriptionDashboardProp
   const [localAdmin, setLocalAdmin] = useState<{ username: string; name: string } | null>(adminUser || null);
   const [isCheckingStatus, setIsCheckingStatus] = useState<boolean>(true);
   const [isAdminRegistered, setIsAdminRegistered] = useState<boolean | null>(null);
+  const [adminStatusError, setAdminStatusError] = useState<string | null>(null);
 
   // Super Admin Registration-First State
   const [regName, setRegName] = useState('');
@@ -107,6 +108,12 @@ export const AdminSubscriptionDashboard: React.FC<AdminSubscriptionDashboardProp
     setIsCheckingStatus(true);
     try {
       const status = await fetchAdminStatusAPI();
+      if (!status.success) {
+        setIsAdminRegistered(null);
+        setAdminStatusError(status.error || 'Unable to verify Super Admin registration status.');
+        return;
+      }
+      setAdminStatusError(null);
       setIsAdminRegistered(status.isRegistered);
       if (status.admin) {
         setLocalAdmin(status.admin);
@@ -611,11 +618,28 @@ export const AdminSubscriptionDashboard: React.FC<AdminSubscriptionDashboardProp
   // UNAUTHENTICATED VIEW: STRICT REGISTRATION-FIRST, THEN LOGIN WORKFLOW
   // =========================================================================
   if (!localAdmin && !adminUser) {
-    if (isCheckingStatus || isAdminRegistered === null) {
+    if (isCheckingStatus) {
       return (
         <div className="max-w-md mx-auto py-16 px-4 text-center space-y-3">
           <RefreshCw className="w-7 h-7 animate-spin text-purple-600 mx-auto" />
           <p className="text-xs font-bold text-stone-600">Checking Super Administrator registration status...</p>
+        </div>
+      );
+    }
+
+    if (adminStatusError || isAdminRegistered === null) {
+      return (
+        <div className="max-w-md mx-auto py-16 px-4 text-center space-y-4">
+          <AlertCircle className="w-8 h-8 text-rose-600 mx-auto" />
+          <p className="text-sm font-bold text-stone-800">Cannot verify Super Admin setup status.</p>
+          <p className="text-xs text-stone-600">{adminStatusError || 'Please try again.'}</p>
+          <button
+            type="button"
+            onClick={refreshAdminStatus}
+            className="px-5 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-800 text-white text-xs font-black"
+          >
+            Retry status check
+          </button>
         </div>
       );
     }

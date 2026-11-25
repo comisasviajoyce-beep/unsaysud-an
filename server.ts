@@ -2,7 +2,7 @@ import express from "express";
 import http from "http";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
+import { getDatabasePool, initializeAppDataDocumentStore, loadAppDataDocument, queueAppDataDocumentWrite, flushAppDataDocumentWrites, saveAppMedia, getAppMedia, deleteAppMedia } from "./src/server/config/database";
 import { initialMenuDatabase, initialStallNotices, stallCredentials } from "./src/data/initialData";
 import {
   DishItem,
@@ -14,8 +14,10 @@ import {
 } from "./src/types";
 import {
   registerSubscriptionRoutes,
+  initializeSubscriptionDatabaseStore,
   isStallSubscriptionActive,
   ensureStallTrialInitialized,
+  activateStallFreeTrial,
   hasStallSubscriptionOrTrialRecord,
   getStallSubscriptionAndTrialInfo
 } from "./src/server/subscriptionService";
@@ -26,6 +28,8 @@ import {
   getMerchantSession,
   hashSecret,
   isSuperAdminRegistered,
+  initializeSuperAdminStore,
+  initializeSessionSecretStore,
   requireMerchant,
   requireSuperAdmin,
   setSessionCookie,
@@ -40,12 +44,9 @@ import {
 const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads", "dishes");
 const DATA_DIR = path.join(process.cwd(), "data");
 
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-}
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+// Do not create local JSON or upload directories during module initialization.
+// Vercel's serverless filesystem is read-only; local storage directories are
+// maintained by the development workspace/repository.
 
 const MENU_STORE_FILE = path.join(DATA_DIR, "menu_items.json");
 const NOTICES_STORE_FILE = path.join(DATA_DIR, "stall_notices.json");
@@ -128,8 +129,9 @@ function loadImageRegistry(): ImageRegistryData {
 }
 
 function saveImageRegistry(registry: ImageRegistryData) {
+  registry.lastUpdated = new Date().toISOString();
+  queueAppDataDocumentWrite("image_registry", registry);
   try {
-    registry.lastUpdated = new Date().toISOString();
     const dataStr = JSON.stringify(registry, null, 2);
     fs.writeFileSync(IMAGE_REGISTRY_FILE, dataStr, "utf-8");
     fs.writeFileSync(IMAGE_REGISTRY_BACKUP, dataStr, "utf-8");
@@ -166,6 +168,7 @@ function loadMenuVersions(): Record<string, MenuVersionSnapshot[]> {
 }
 
 function saveMenuVersions(versions: Record<string, MenuVersionSnapshot[]>) {
+  queueAppDataDocumentWrite("menu_versions", versions);
   try {
     fs.writeFileSync(VERSIONS_STORE_FILE, JSON.stringify(versions, null, 2), "utf-8");
   } catch (err) {
@@ -278,10 +281,23 @@ function loadMenuData(): DishItem[] {
 }
 
 function saveMenuToDisk() {
+  queueAppDataDocumentWrite("menu_items", menuItems);
   try {
     fs.writeFileSync(MENU_STORE_FILE, JSON.stringify(menuItems, null, 2), "utf-8");
   } catch (err) {
     console.error("Failed to save menu items to disk:", err);
+  }
+}
+
+// Wait for queued MySQL document writes before returning success from merchant mutations.
+// This prevents Vercel serverless functions from ending before menu/photo-vault data is durable.
+async function flushMerchantManagementWrites(): Promise<boolean> {
+  try {
+    await flushAppDataDocumentWrites();
+    return true;
+  } catch (err) {
+    console.error("Merchant management data could not be confirmed in MySQL:", err);
+    return false;
   }
 }
 
@@ -306,6 +322,7 @@ function loadNoticesData(): Record<string, string> {
 }
 
 function saveNoticesToDisk() {
+  queueAppDataDocumentWrite("stall_notices", stallNotices);
   try {
     fs.writeFileSync(NOTICES_STORE_FILE, JSON.stringify(stallNotices, null, 2), "utf-8");
   } catch (err) {
@@ -325,20 +342,91 @@ function loadOwnersData(): StallOwnerRecord[] {
   } catch (err) {
     console.error("Error loading owners from disk:", err);
   }
-  try {
-    fs.writeFileSync(OWNERS_STORE_FILE, JSON.stringify([], null, 2), "utf-8");
-  } catch (err) {
-    console.error("Failed to write empty owners file to disk:", err);
+  if (!(process.env.VERCEL || process.env.VERCEL_ENV || process.cwd().startsWith("/var/task"))) {
+    try {
+      fs.writeFileSync(OWNERS_STORE_FILE, JSON.stringify([], null, 2), "utf-8");
+    } catch (err) {
+      console.error("Failed to write empty owners file to disk:", err);
+    }
   }
   return [];
 }
 
 function saveOwnersToDisk() {
+  // JSON remains a local-development fallback only. Railway MySQL is authoritative on Vercel.
+  if (process.env.VERCEL || process.env.VERCEL_ENV || process.cwd().startsWith("/var/task")) return;
   try {
     fs.writeFileSync(OWNERS_STORE_FILE, JSON.stringify(stallOwners, null, 2), "utf-8");
   } catch (err) {
     console.error("Failed to save owners to disk:", err);
   }
+}
+
+async function initializeStallOwnerStore(): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.query(`CREATE TABLE IF NOT EXISTS stall_owners (
+    id VARCHAR(96) NOT NULL PRIMARY KEY,
+    stall_no VARCHAR(80) NOT NULL,
+    stall_name VARCHAR(191) NOT NULL,
+    owner_name VARCHAR(160) NOT NULL,
+    username VARCHAR(32) NOT NULL,
+    email VARCHAR(254) NOT NULL,
+    contact_number VARCHAR(32) NULL,
+    zone VARCHAR(16) NULL,
+    account_status VARCHAR(16) NOT NULL DEFAULT 'active',
+    password_hash CHAR(128) NOT NULL,
+    password_salt VARCHAR(64) NOT NULL,
+    pin_hash CHAR(128) NULL,
+    pin_salt VARCHAR(64) NULL,
+    created_at VARCHAR(40) NOT NULL,
+    updated_at VARCHAR(40) NOT NULL,
+    UNIQUE KEY uq_stall_owners_username (username),
+    UNIQUE KEY uq_stall_owners_email (email),
+    UNIQUE KEY uq_stall_owners_stall_name (stall_name)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  let [rows] = await pool.query<any[]>(`SELECT * FROM stall_owners ORDER BY created_at ASC`);
+  // One-time safe backfill: only seed legacy local owner records when MySQL is empty.
+  // Existing database accounts and password hashes are never overwritten.
+  if (rows.length === 0 && stallOwners.length > 0) {
+    for (const owner of stallOwners) {
+      await pool.execute(`INSERT IGNORE INTO stall_owners
+        (id,stall_no,stall_name,owner_name,username,email,contact_number,zone,account_status,password_hash,password_salt,pin_hash,pin_salt,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ownerSqlValues(owner));
+    }
+    [rows] = await pool.query<any[]>(`SELECT * FROM stall_owners ORDER BY created_at ASC`);
+  }
+  stallOwners = rows.map((r: any) => ({
+    id:r.id, stallNo:r.stall_no, stallName:r.stall_name, ownerName:r.owner_name,
+    username:r.username, email:r.email, contactNumber:r.contact_number || undefined,
+    zone:r.zone || undefined, accountStatus:r.account_status || "active",
+    passwordHash:r.password_hash, passwordSalt:r.password_salt,
+    pinHash:r.pin_hash || undefined, pinSalt:r.pin_salt || undefined,
+    createdAt:r.created_at, updatedAt:r.updated_at
+  }));
+}
+
+function ownerSqlValues(owner: StallOwnerRecord) {
+  return [owner.id,owner.stallNo,owner.stallName,owner.ownerName,owner.username,owner.email,
+    owner.contactNumber || null,owner.zone || null,owner.accountStatus || "active",
+    owner.passwordHash,owner.passwordSalt,owner.pinHash || null,owner.pinSalt || null,
+    owner.createdAt,owner.updatedAt];
+}
+
+async function insertStallOwner(owner: StallOwnerRecord): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.execute(`INSERT INTO stall_owners
+    (id,stall_no,stall_name,owner_name,username,email,contact_number,zone,account_status,password_hash,password_salt,pin_hash,pin_salt,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ownerSqlValues(owner));
+}
+
+async function persistStallOwner(owner: StallOwnerRecord): Promise<void> {
+  const pool = getDatabasePool();
+  await pool.execute(`UPDATE stall_owners SET stall_no=?,stall_name=?,owner_name=?,username=?,email=?,
+    contact_number=?,zone=?,account_status=?,password_hash=?,password_salt=?,pin_hash=?,pin_salt=?,updated_at=?
+    WHERE id=?`, [owner.stallNo,owner.stallName,owner.ownerName,owner.username,owner.email,
+    owner.contactNumber || null,owner.zone || null,owner.accountStatus || "active",
+    owner.passwordHash,owner.passwordSalt,owner.pinHash || null,owner.pinSalt || null,
+    owner.updatedAt,owner.id]);
 }
 
 let menuItems: DishItem[] = loadMenuData();
@@ -391,6 +479,7 @@ function loadSalesRecords(): SalesRecord[] {
 }
 
 function saveSalesRecordsToDisk(records: SalesRecord[]) {
+  queueAppDataDocumentWrite("sales_records", records);
   try {
     fs.writeFileSync(SALES_STORE_FILE, JSON.stringify(records, null, 2), "utf-8");
   } catch (err) {
@@ -425,6 +514,7 @@ function loadStallAnalytics(): StallAnalyticsStore {
 }
 
 function saveStallAnalyticsToDisk() {
+  queueAppDataDocumentWrite("stall_analytics", { stallViewLogs, itemViewLogs });
   try {
     fs.writeFileSync(
       STALL_ANALYTICS_FILE,
@@ -490,6 +580,7 @@ function loadVisitorAnalytics(): VisitorAnalyticsStore {
 }
 
 function saveVisitorAnalyticsToDisk() {
+  queueAppDataDocumentWrite("visitor_analytics", visitorAnalyticsStore);
   try {
     fs.writeFileSync(VISITOR_ANALYTICS_FILE, JSON.stringify(visitorAnalyticsStore, null, 2), "utf-8");
   } catch (err) {
@@ -497,7 +588,7 @@ function saveVisitorAnalyticsToDisk() {
   }
 }
 
-const visitorAnalyticsStore: VisitorAnalyticsStore = loadVisitorAnalytics();
+let visitorAnalyticsStore: VisitorAnalyticsStore = loadVisitorAnalytics();
 let lastVisitorDiskSaveMs = 0;
 
 // Deduplication tracking: (key -> last timestamp ms)
@@ -522,7 +613,7 @@ const siteVisitCooldowns = new Map<string, number>();
   });
 })();
 
-async function startServer() {
+export async function createApp() {
   const app = express();
   const httpServer = http.createServer(app);
   const PORT = Number(process.env.PORT) || 3000;
@@ -531,6 +622,24 @@ async function startServer() {
   // Support image file upload payloads up to 25MB
   app.use(express.json({ limit: "25mb" }));
   app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+
+  // Ensure queued MySQL writes complete before an API response reports success.
+  app.use("/api", (req, res, next) => {
+    const originalJson = res.json.bind(res);
+    (res as any).json = (body: any) => {
+      void flushAppDataDocumentWrites()
+        .then(() => originalJson(body))
+        .catch(error => {
+          console.error("Application data persistence failed before response:", error);
+          if (!res.headersSent) {
+            res.status(500);
+            originalJson({ success: false, error: "Data could not be saved to the database. Please retry." });
+          }
+        });
+      return res;
+    };
+    next();
+  });
 
   // Serve persistent uploaded photos statically (404 immediately if file missing so it doesn't fallback to index.html)
   const uploadsStaticPath = path.join(process.cwd(), "public", "uploads");
@@ -547,19 +656,76 @@ async function startServer() {
   const assetsStaticPath = path.join(process.cwd(), "public", "assets");
   app.use("/assets", express.static(assetsStaticPath));
 
-  // Health Check
-  app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  // Health Check: verify the application and its Railway MySQL connection.
+  app.get("/api/health", async (_req, res) => {
+    try {
+      await getDatabasePool().query("SELECT 1");
+      res.json({
+        status: "ok",
+        database: "connected",
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error("Database health check failed:", error);
+      res.status(503).json({
+        status: "error",
+        database: "disconnected",
+        message: "Database connection failed.",
+        timestamp: new Date().toISOString()
+      });
+    }
   });
+
+  // Initialize persistent account stores before registering routes.
+  await initializeStallOwnerStore();
+  await initializeSessionSecretStore();
+  await initializeSuperAdminStore();
+  await initializeAppDataDocumentStore();
+  await initializeSubscriptionDatabaseStore();
+
+  // Durable media endpoint: menu images are public; payment proofs require the owning merchant or admin.
+  app.get("/api/media/:mediaId", async (req, res) => {
+    try {
+      const media = await getAppMedia(String(req.params.mediaId));
+      if (!media) return res.status(404).json({ error: "Media not found." });
+      if (media.visibility === "private") {
+        const admin = getAdminSession(req);
+        const merchant = getMerchantSession(req);
+        if (!admin && (!merchant || merchant.ownerId !== media.ownerId)) {
+          return res.status(403).json({ error: "You are not authorized to view this media." });
+        }
+      }
+      res.setHeader("Content-Type", media.mimeType);
+      res.setHeader("Cache-Control", media.visibility === "public" ? "public, max-age=31536000, immutable" : "private, no-store");
+      res.send(media.data);
+    } catch (error: any) {
+      console.error("Media retrieval failed:", error);
+      res.status(500).json({ error: "Failed to retrieve media." });
+    }
+  });
+
+  // Hydrate application domains from Railway MySQL. Existing local JSON files
+  // are used only as a one-time seed when a MySQL document does not exist.
+  menuItems = await loadAppDataDocument("menu_items", menuItems);
+  stallNotices = await loadAppDataDocument("stall_notices", stallNotices);
+  imageRegistry = await loadAppDataDocument("image_registry", imageRegistry);
+  menuVersions = await loadAppDataDocument("menu_versions", menuVersions);
+  salesRecords = await loadAppDataDocument("sales_records", salesRecords);
+  const storedStallAnalytics = await loadAppDataDocument<StallAnalyticsStore>("stall_analytics", { stallViewLogs, itemViewLogs });
+  stallViewLogs = storedStallAnalytics.stallViewLogs || [];
+  itemViewLogs = storedStallAnalytics.itemViewLogs || [];
+  visitorAnalyticsStore = await loadAppDataDocument("visitor_analytics", visitorAnalyticsStore);
+  seedInitialVersionsIfEmpty();
 
   // Register Subscription, Payment, Due Notifications & Super Admin Management Routes
   registerSubscriptionRoutes(app, {
     getRegisteredOwners: () => stallOwners.map(sanitizeOwner),
-    setOwnerStatus: (ownerId: string, status: "active" | "suspended") => {
+    setOwnerStatus: async (ownerId: string, status: "active" | "suspended") => {
       const owner = stallOwners.find(o => o.id === ownerId);
       if (!owner) return null;
       owner.accountStatus = status;
       owner.updatedAt = new Date().toISOString();
+      await persistStallOwner(owner);
       saveOwnersToDisk();
       menuVersion = Date.now();
       return sanitizeOwner(owner);
@@ -609,7 +775,7 @@ async function startServer() {
   });
 
   // 1. Stall Owner Registration (Independent multi-merchant accounts with duplicate & overwrite protection)
-  app.post("/api/auth/register", (req, res) => {
+  app.post("/api/auth/register", async (req, res) => {
     try {
       if (!verifyCsrfForCookieMutation(req)) {
         return res.status(403).json({ error: "Security check failed. Please refresh and try again." });
@@ -737,11 +903,30 @@ async function startServer() {
         updatedAt: now
       };
 
+      try {
+        await insertStallOwner(newOwner);
+      } catch (dbError: any) {
+        if (dbError?.code === "ER_DUP_ENTRY") {
+          const message = String(dbError.message || "");
+          const field = message.includes("email") ? "email" : message.includes("stall_name") ? "stall" : "username";
+          return res.status(409).json({ error: field === "email"
+            ? "This email address is already registered to an account."
+            : field === "stall"
+              ? "This cafeteria stall already has a registered owner account. Please choose another stall or register a new stall name."
+              : "This username is already taken. Please choose another username." });
+        }
+        throw dbError;
+      }
       stallOwners.push(newOwner);
       saveOwnersToDisk();
 
-      // Initialize stall trial state cleanly ("Not Started", ready for 14-day Free Trial activation)
+      // Enroll every newly registered owner in the one-time 14-day free trial.
+      // The authenticated session below lets the owner enter the dashboard immediately.
       ensureStallTrialInitialized(newOwner.stallName, newOwner.id);
+      const trialActivation = activateStallFreeTrial(newOwner.stallName, newOwner.id);
+      if (!trialActivation.success) {
+        console.warn("New merchant registered without an active free trial:", trialActivation.error || trialActivation.trialStatus);
+      }
       menuVersion = Date.now();
 
       // Issue persistent signed HttpOnly session cookie
@@ -838,7 +1023,7 @@ async function startServer() {
   });
 
   // 3. Forgot Password / Reset with Registered Security PIN
-  app.post("/api/auth/forgot-password", (req, res) => {
+  app.post("/api/auth/forgot-password", async (req, res) => {
     try {
       if (!verifyCsrfForCookieMutation(req)) {
         return res.status(403).json({ error: "Security check failed." });
@@ -866,6 +1051,7 @@ async function startServer() {
       owner.passwordHash = hash;
       owner.passwordSalt = salt;
       owner.updatedAt = new Date().toISOString();
+      await persistStallOwner(owner);
       saveOwnersToDisk();
 
       res.json({ success: true, message: "Password reset successfully. You can now log in." });
@@ -875,7 +1061,7 @@ async function startServer() {
   });
 
   // 4. Update Profile / Security Settings (Authenticated Merchant matching stallName)
-  app.post("/api/auth/update-profile", (req, res) => {
+  app.post("/api/auth/update-profile", async (req, res) => {
     try {
       const { stallName, currentPin, currentPassword, newOwnerName, newContactNumber, newPassword, newPin } = req.body || {};
       if (!stallName) {
@@ -928,6 +1114,7 @@ async function startServer() {
       }
 
       owner.updatedAt = new Date().toISOString();
+      await persistStallOwner(owner);
       saveOwnersToDisk();
 
       res.json({
@@ -1343,7 +1530,17 @@ async function startServer() {
           ownerName: owner?.ownerName || null,
           ownerUsername: owner?.username || null,
           accountStatus: owner ? (owner.accountStatus || "active") : null,
-          subscriptionStatus: owner || hasStallSubscriptionOrTrialRecord(s.name) ? subInfo.status : "CATALOG",
+          subscriptionStatus: !owner && !hasStallSubscriptionOrTrialRecord(s.name)
+            ? "CATALOG"
+            : owner?.accountStatus === "suspended" || subInfo.status === "SUSPENDED"
+              ? "SUSPENDED"
+              : subInfo.status === "PENDING"
+                ? "PENDING"
+                : subInfo.isSubscribed
+                  ? "SUBSCRIBED"
+                  : subInfo.isTrial
+                    ? "FREE TRIAL ACTIVE"
+                    : subInfo.trialStatus.toUpperCase(),
           trialStatus: subInfo.trialStatus,
           isPubliclyVisible: visibleCheck.active,
           totalDishes: stallDishes.length,
@@ -1612,7 +1809,10 @@ async function startServer() {
           zone: s.zone,
           isActive: access.active,
           subscriptionStatus: access.status,
-          hasRegisteredOwner: stallOwners.some(o => o.stallName.toLowerCase() === s.name.toLowerCase())
+          hasRegisteredOwner: stallOwners.some(o => o.stallName.toLowerCase() === s.name.toLowerCase()),
+          trialStatus: getStallSubscriptionAndTrialInfo(s.name).trialStatus,
+          isTrial: getStallSubscriptionAndTrialInfo(s.name).isTrial,
+          isSubscribed: getStallSubscriptionAndTrialInfo(s.name).isSubscribed
         };
       }),
       version: menuVersion
@@ -1630,6 +1830,7 @@ async function startServer() {
     const item = menuItems.find(m => m.id === id);
     if (item) {
       item.clicks = (item.clicks || 0) + 1;
+      saveMenuToDisk();
       res.json({ success: true, clicks: item.clicks });
     } else {
       res.status(404).json({ error: "Item not found" });
@@ -1637,7 +1838,7 @@ async function startServer() {
   });
 
   // Toggle item availability (in-stock / sold-out)
-  app.post("/api/menu/:id/toggle-stock", (req, res) => {
+  app.post("/api/menu/:id/toggle-stock", async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const { stall } = req.body || {};
     const item = menuItems.find(m => m.id === id);
@@ -1665,12 +1866,15 @@ async function startServer() {
 
     item.available = !item.available;
     saveMenuToDisk();
+    if (!(await flushMerchantManagementWrites())) {
+      return res.status(500).json({ error: "Stock status could not be confirmed as saved. Please refresh and try again." });
+    }
     menuVersion = Date.now();
     res.json({ success: true, item });
   });
 
   // Adjust or set price
-  app.post("/api/menu/:id/price", (req, res) => {
+  app.post("/api/menu/:id/price", async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const { price, delta, stall } = req.body || {};
     const item = menuItems.find(m => m.id === id);
@@ -1704,6 +1908,9 @@ async function startServer() {
     }
 
     saveMenuToDisk();
+    if (!(await flushMerchantManagementWrites())) {
+      return res.status(500).json({ error: "Price update could not be confirmed as saved. Please refresh and try again." });
+    }
     menuVersion = Date.now();
     res.json({ success: true, item });
   });
@@ -1713,7 +1920,7 @@ async function startServer() {
   // ==========================================================================
 
   // Upload, replace, or remove a food photo for a specific stall and menu item
-  app.post("/api/menu/:id/photo", (req, res) => {
+  app.post("/api/menu/:id/photo", async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
       const { stall, dataUrl, remove } = req.body || {};
@@ -1755,7 +1962,11 @@ async function startServer() {
           }
         }
 
-        // Only delete physical file if stall owner explicitly chose "Delete Image Permanently"
+        if (explicitPermanentDelete === true && previousImageId) {
+          await deleteAppMedia(previousImageId);
+        }
+
+        // Only delete legacy physical file if stall owner explicitly chose "Delete Image Permanently"
         if (explicitPermanentDelete === true && previousImageUrl && previousImageUrl.includes("/uploads/dishes/")) {
           const oldFilename = previousImageUrl.split("?")[0].split("/").pop();
           if (oldFilename) {
@@ -1777,6 +1988,9 @@ async function startServer() {
           delete item.imageUrl;
         }
         saveMenuToDisk();
+        if (!(await flushMerchantManagementWrites())) {
+          return res.status(500).json({ error: "Photo removal could not be confirmed as saved. Please refresh and try again." });
+        }
         menuVersion = Date.now();
 
         return res.json({
@@ -1814,28 +2028,20 @@ async function startServer() {
       // Generate unique persistent filename and stable imageId
       const timestamp = Date.now();
       const stallSlug = item.stall.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
-      const filename = `stall_${stallSlug}_item_${item.id}_${timestamp}.${ext}`;
       const imageId = `img_${stallSlug}_item_${item.id}_${timestamp}`;
-      const targetFilePath = path.join(UPLOADS_DIR, filename);
+      const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+      await saveAppMedia(imageId, mimeType, buffer, session.ownerId, "public");
 
-      // 1. Write actual image to persistent storage
-      try {
-        fs.writeFileSync(targetFilePath, buffer);
-      } catch (writeErr) {
-        console.error("Failed to write image file to persistent storage:", writeErr);
-        return res.status(500).json({ error: "Photo upload failed. Your previous photo was kept." });
-      }
-
-      // 2. Register in persistent master owner images registry
-      const persistentUrl = `/uploads/dishes/${filename}?v=${timestamp}`;
+      // Register in the MySQL-backed master owner images registry.
+      const persistentUrl = `/api/media/${imageId}`;
       const regRecord: OwnerImageRecord = {
         imageId,
-        storageId: filename,
+        storageId: imageId,
         persistentImageUrl: persistentUrl,
         menuId: item.id,
         stallName: item.stall,
         stallNo: item.stall.split("—")[0].trim(),
-        ownerId: `cred_${item.stall.split("—")[0].trim()}`,
+        ownerId: session.ownerId,
         dishName: item.name,
         dishCategory: item.category,
         dishPrice: item.price,
@@ -1855,7 +2061,7 @@ async function startServer() {
       saveImageRegistry(imageRegistry);
 
       item.imageId = imageId;
-      item.storageId = filename;
+      item.storageId = imageId;
       item.uploadTimestamp = timestamp;
       item.isOwnerImageProtected = true;
       item.ownerUploadedImage = persistentUrl;
@@ -1864,9 +2070,12 @@ async function startServer() {
       // 3. Persist updated menu database to disk
       try {
         saveMenuToDisk();
+        if (!(await flushMerchantManagementWrites())) {
+          throw new Error("MySQL did not confirm the saved menu photo and image registry.");
+        }
       } catch (dbErr) {
         console.error("Failed to update database record for menu photo:", dbErr);
-        try { fs.unlinkSync(targetFilePath); } catch {}
+        try { await deleteAppMedia(imageId); } catch {}
         return res.status(500).json({ error: "We couldn't save the new photo. Please try again." });
       }
 
@@ -1885,7 +2094,7 @@ async function startServer() {
   });
 
   // Update existing menu item details (name, price, category, etc.)
-  app.post("/api/menu/:id/update", (req, res) => {
+  app.post("/api/menu/:id/update", async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
       const { stall, updates } = req.body || {};
@@ -1972,6 +2181,9 @@ async function startServer() {
       if (typeof updates.hidden === "boolean") item.hidden = updates.hidden;
 
       saveMenuToDisk();
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "Menu changes could not be confirmed as saved. Please refresh and try again." });
+      }
       menuVersion = Date.now();
 
       res.json({ success: true, item });
@@ -1981,7 +2193,7 @@ async function startServer() {
   });
 
   // Safe Menu Item Deletion (Preserves owner image in vault unless explicitly requested)
-  app.post("/api/menu/:id/delete", (req, res) => {
+  app.post("/api/menu/:id/delete", async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
       const { stall, deleteImagePermanently } = req.body || {};
@@ -2029,7 +2241,11 @@ async function startServer() {
         }
       }
 
-      // Only delete physical image file if owner explicitly requested permanent file destruction
+      if (deleteImagePermanently === true && item.imageId) {
+        await deleteAppMedia(item.imageId);
+      }
+
+      // Only delete legacy physical image file if owner explicitly requested permanent file destruction
       if (deleteImagePermanently === true && item.ownerUploadedImage && item.ownerUploadedImage.includes("/uploads/dishes/")) {
         const filename = item.ownerUploadedImage.split("?")[0].split("/").pop();
         if (filename) {
@@ -2045,6 +2261,9 @@ async function startServer() {
       // Remove from active menu list
       menuItems.splice(itemIndex, 1);
       saveMenuToDisk();
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "Menu removal and Photo Vault update could not be confirmed as saved." });
+      }
       menuVersion = Date.now();
 
       res.json({
@@ -2077,7 +2296,7 @@ async function startServer() {
   });
 
   // Restore Archived Dish
-  app.post("/api/menu/restore-dish", (req, res) => {
+  app.post("/api/menu/restore-dish", async (req, res) => {
     try {
       const { archiveId, stall } = req.body || {};
       const idx = imageRegistry.archivedDishes.findIndex(a => a.archiveId === archiveId);
@@ -2120,6 +2339,9 @@ async function startServer() {
 
       menuItems.push(restoredDish);
       saveMenuToDisk();
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "Restored dish and photo could not be confirmed as saved." });
+      }
       menuVersion = Date.now();
 
       res.json({ success: true, item: restoredDish });
@@ -2129,7 +2351,7 @@ async function startServer() {
   });
 
   // Bulk Synchronize & Restore Owner Photos from authenticated owner's stall vault
-  app.post("/api/menu/sync-photos", (req, res) => {
+  app.post("/api/menu/sync-photos", async (req, res) => {
     try {
       const session = requireMerchant(req, res);
       if (!session) return;
@@ -2158,10 +2380,10 @@ async function startServer() {
             const buffer = Buffer.from(matches[2], "base64");
             const timestamp = Date.now();
             const stallSlug = item.stall.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
-            const filename = `stall_${stallSlug}_item_${item.id}_${timestamp}.${ext}`;
-            const targetFilePath = path.join(UPLOADS_DIR, filename);
-            fs.writeFileSync(targetFilePath, buffer);
-            const savedUrl = `/uploads/dishes/${filename}?v=${timestamp}`;
+            const imageId = `img_${stallSlug}_item_${item.id}_${timestamp}`;
+            const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+            await saveAppMedia(imageId, mimeType, buffer, session.ownerId, "public");
+            const savedUrl = `/api/media/${imageId}`;
             item.ownerUploadedImage = savedUrl;
             item.imageUrl = savedUrl;
             updatedCount++;
@@ -2175,6 +2397,9 @@ async function startServer() {
 
       if (updatedCount > 0) {
         saveMenuToDisk();
+        if (!(await flushMerchantManagementWrites())) {
+          return res.status(500).json({ error: "Restored photos could not be confirmed as saved." });
+        }
         menuVersion = Date.now();
       }
 
@@ -2186,7 +2411,7 @@ async function startServer() {
   });
 
   // Add new menu item to database and persist
-  app.post("/api/menu/add", (req, res) => {
+  app.post("/api/menu/add", async (req, res) => {
     try {
       const { stall, item } = req.body || {};
       if (!item || !stall) {
@@ -2227,23 +2452,22 @@ async function startServer() {
           const buffer = Buffer.from(matches[2], "base64");
           const timestamp = Date.now();
           const stallSlug = stall.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
-          const filename = `stall_${stallSlug}_item_${newId}_${timestamp}.${ext}`;
           imageId = `img_${stallSlug}_item_${newId}_${timestamp}`;
-          storageId = filename;
+          storageId = imageId;
           uploadTimestamp = timestamp;
-          const targetFilePath = path.join(UPLOADS_DIR, filename);
-          fs.writeFileSync(targetFilePath, buffer);
-          persistentImageUrl = `/uploads/dishes/${filename}?v=${timestamp}`;
+          const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+          await saveAppMedia(imageId, mimeType, buffer, session.ownerId, "public");
+          persistentImageUrl = `/api/media/${imageId}`;
 
           // Register in persistent master owner images registry
           const regRecord: OwnerImageRecord = {
             imageId,
-            storageId: filename,
+            storageId: imageId,
             persistentImageUrl,
             menuId: newId,
             stallName: stall,
             stallNo: stall.split("—")[0].trim(),
-            ownerId: `cred_${stall.split("—")[0].trim()}`,
+            ownerId: session.ownerId,
             dishName: item.name,
             dishCategory: item.category,
             dishPrice: item.price,
@@ -2270,6 +2494,9 @@ async function startServer() {
 
       menuItems.unshift(created);
       saveMenuToDisk();
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "New menu item and photo could not be confirmed as saved." });
+      }
       menuVersion = Date.now();
 
       res.json({ success: true, item: created });
@@ -2283,7 +2510,7 @@ async function startServer() {
   // ==========================================================================
 
   // Permanent Batch Save: Commits all additions, edits, deletions, and photos for authenticated merchant's stall
-  app.post("/api/menu/save-batch", (req, res) => {
+  app.post("/api/menu/save-batch", async (req, res) => {
     try {
       const { stall, items, deletedItemIds, summary } = req.body || {};
       if (!stall || typeof stall !== "string") {
@@ -2399,15 +2626,13 @@ async function startServer() {
             if (ext === "jpeg") ext = "jpg";
             const buffer = Buffer.from(matches[2], "base64");
             const timestamp = Date.now();
-            const filename = `stall_${stallSlug}_item_${itemId}_${timestamp}.${ext}`;
-            const targetFilePath = path.join(UPLOADS_DIR, filename);
-            fs.writeFileSync(targetFilePath, buffer);
-
-            const persistentUrl = `/uploads/dishes/${filename}?v=${timestamp}`;
             const newImageId = `img_${stallSlug}_item_${itemId}_${timestamp}`;
+            const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+            await saveAppMedia(newImageId, mimeType, buffer, session.ownerId, "public");
+            const persistentUrl = `/api/media/${newImageId}`;
 
             itemImageId = newImageId;
-            itemStorageId = filename;
+            itemStorageId = newImageId;
             itemUploadTimestamp = timestamp;
             itemIsProtected = true;
             itemOwnerImage = persistentUrl;
@@ -2416,12 +2641,12 @@ async function startServer() {
             // Register in permanent master owner images registry
             const regRecord: OwnerImageRecord = {
               imageId: newImageId,
-              storageId: filename,
+              storageId: newImageId,
               persistentImageUrl: persistentUrl,
               menuId: itemId,
               stallName: stall,
               stallNo: stall.split("—")[0].trim(),
-              ownerId: `cred_${stall.split("—")[0].trim()}`,
+              ownerId: session.ownerId,
               dishName: rawItem.name.trim(),
               dishCategory: rawItem.category,
               dishPrice: Number(rawItem.price),
@@ -2497,6 +2722,9 @@ async function startServer() {
         menuVersions[stall] = menuVersions[stall].slice(0, 35);
       }
       saveMenuVersions(menuVersions);
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "Menu changes, Photo Vault records, and version history could not be confirmed as saved." });
+      }
 
       menuVersion = Date.now();
 
@@ -3084,6 +3312,7 @@ async function startServer() {
   // VITE MIDDLEWARE & STATIC ASSETS
   // ==========================================================================
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -3101,9 +3330,18 @@ async function startServer() {
     });
   }
 
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Unsay Sud-an? server running on http://0.0.0.0:${PORT}`);
-  });
+  if (process.env.VERCEL !== "1") {
+    httpServer.listen(PORT, "0.0.0.0", () => {
+      console.log(`Unsay Sud-an? server running on http://0.0.0.0:${PORT}`);
+    });
+  }
+
+  return app;
 }
 
-startServer();
+if (process.env.VERCEL !== "1") {
+  void createApp().catch((error) => {
+    console.error("Failed to start Unsay Sud-an server:", error);
+    process.exitCode = 1;
+  });
+}

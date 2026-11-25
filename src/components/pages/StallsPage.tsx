@@ -333,9 +333,22 @@ export const StallsPage: React.FC<StallsPageProps> = ({
                     </div>
 
                     <div>
-                      <span className="text-[11px] font-extrabold text-orange-600 block">
-                        {s.stallNo || 'Cafeteria Stall'}
-                      </span>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-extrabold text-orange-600 block">
+                          {s.stallNo || 'Cafeteria Stall'}
+                        </span>
+                        {s.hasRegisteredOwner && (
+                          <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border whitespace-nowrap ${
+                            s.isActive
+                              ? s.isSubscribed
+                                ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-stone-100 text-stone-600 border-stone-200'
+                          }`}>
+                            {s.isSubscribed ? 'SUBSCRIBED' : s.isTrial ? 'FREE TRIAL' : (s.trialStatus || s.subscriptionStatus || 'INACTIVE').toUpperCase()}
+                          </span>
+                        )}
+                      </div>
                       <h3 className="text-sm sm:text-base font-black text-stone-900 font-display group-hover:text-orange-600 transition-colors line-clamp-1">
                         {s.name}
                       </h3>

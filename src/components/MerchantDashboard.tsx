@@ -144,27 +144,41 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
   const [isSubscriptionExpired, setIsSubscriptionExpired] = useState<boolean>(false);
   const [subscriptionDaysRemaining, setSubscriptionDaysRemaining] = useState<number>(0);
   const [pendingPaymentInfo, setPendingPaymentInfo] = useState<PaymentRecord | null>(null);
+  const [isTrialActive, setIsTrialActive] = useState(false);
+  const [isPaidSubscribed, setIsPaidSubscribed] = useState(false);
+  const [trialDaysLeft, setTrialDaysLeft] = useState(0);
+  const [trialEndDate, setTrialEndDate] = useState<string | null>(null);
+  const [accessStatus, setAccessStatus] = useState<string>('LOADING');
+  const [hasLoadedSubscriptionStatus, setHasLoadedSubscriptionStatus] = useState(false);
+  const [subscriptionStatusLoadFailed, setSubscriptionStatusLoadFailed] = useState(false);
 
   const checkSubscriptionStatus = async () => {
     try {
       const res = await fetchSubscriptionStatusAPI(stallName);
+      setSubscriptionStatusLoadFailed(!!res.error);
+      setIsTrialActive(!!res.isTrial);
+      setIsPaidSubscribed(!!res.isSubscribed);
+      setTrialDaysLeft(res.trialDaysRemaining || 0);
+      setTrialEndDate(res.trialEndDate || null);
+      setAccessStatus(String(res.status || 'EXPIRED').toUpperCase());
       if (res.hasSubscription && res.subscription) {
         setStallSubscription(res.subscription);
         const expired = !!res.isExpired;
         setIsSubscriptionExpired(expired);
         setSubscriptionDaysRemaining(res.daysRemaining || 0);
-        if (expired && activeTabRef.current !== 'subscription' && activeTabRef.current !== 'account') {
-          setActiveTab('subscription');
-        }
+        // Subscription status is informational here. Keep the merchant on the
+        // tab they selected; billing must not hijack portal navigation.
       } else {
+        setStallSubscription(null);
         setIsSubscriptionExpired(true);
-        if (activeTabRef.current !== 'subscription' && activeTabRef.current !== 'account') {
-          setActiveTab('subscription');
-        }
+        // Merchants can still access portal sections and open Billing manually.
       }
       setPendingPaymentInfo(res.pendingPayment || null);
     } catch (err) {
       console.warn('Subscription check error:', err);
+      setSubscriptionStatusLoadFailed(true);
+    } finally {
+      setHasLoadedSubscriptionStatus(true);
     }
   };
 
@@ -1060,6 +1074,45 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
             <p className="text-xs sm:text-sm font-semibold text-orange-200">
               Welcome, <strong className="text-white">{ownerGreetingName}</strong>!
             </p>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {!hasLoadedSubscriptionStatus ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 border border-white/20 px-3 py-1 text-[11px] font-black text-stone-200">
+                  <Clock className="w-3.5 h-3.5" />
+                  Checking subscription status…
+                </span>
+              ) : subscriptionStatusLoadFailed ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/15 border border-amber-300/40 px-3 py-1 text-[11px] font-black text-amber-200">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Unable to verify status
+                </span>
+              ) : isTrialActive ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-400/15 border border-emerald-300/40 px-3 py-1 text-[11px] font-black text-emerald-200">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  FREE TRIAL · {trialDaysLeft} day{trialDaysLeft === 1 ? '' : 's'} left
+                </span>
+              ) : isPaidSubscribed ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-400/15 border border-emerald-300/40 px-3 py-1 text-[11px] font-black text-emerald-200">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  VERIFIED · {subscriptionDaysRemaining} day{subscriptionDaysRemaining === 1 ? '' : 's'} left
+                </span>
+              ) : pendingPaymentInfo ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/15 border border-amber-300/40 px-3 py-1 text-[11px] font-black text-amber-200">
+                  <Clock className="w-3.5 h-3.5" />
+                  PENDING VERIFICATION
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-400/15 border border-rose-300/40 px-3 py-1 text-[11px] font-black text-rose-200">
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  {accessStatus === 'SUSPENDED' ? 'ACCOUNT SUSPENDED' : 'SUBSCRIPTION REQUIRED'}
+                </span>
+              )}
+              {isTrialActive && trialEndDate && (
+                <span className="text-[10px] text-orange-100/80">
+                  Trial ends {new Date(trialEndDate).toLocaleDateString()}
+                </span>
+              )}
+            </div>
 
             <div className="flex flex-wrap items-center gap-2 pt-0.5">
               <span className="text-xs font-mono font-black px-2.5 py-1 rounded-lg bg-orange-600/90 text-white border border-orange-400/40">

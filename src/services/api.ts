@@ -856,18 +856,31 @@ export async function fetchAdminStatusAPI(): Promise<{
   success: boolean;
   isRegistered: boolean;
   admin?: { id: string; username: string; name: string; email: string } | null;
+  error?: string;
 }> {
   try {
     const res = await apiFetch('/api/admin/status');
-    const data = await res.json();
-    if (!res.ok) return { success: false, isRegistered: true, admin: null };
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return {
+        success: false,
+        isRegistered: false,
+        admin: null,
+        error: data.error || `Unable to verify Super Admin registration status (HTTP ${res.status}).`
+      };
+    }
     return {
       success: true,
       isRegistered: Boolean(data.isRegistered),
       admin: data.admin || null
     };
-  } catch {
-    return { success: false, isRegistered: true, admin: null };
+  } catch (err: any) {
+    return {
+      success: false,
+      isRegistered: false,
+      admin: null,
+      error: err?.message || 'Unable to verify Super Admin registration status.'
+    };
   }
 }
 
@@ -1010,13 +1023,23 @@ export async function adminVerifyPaymentAPI(
   adminUsername?: string
 ): Promise<{ success: boolean; message?: string; payment?: PaymentRecord; subscription?: UserSubscription; error?: string }> {
   try {
-    const res = await apiFetch(`/api/admin/payments/${paymentId}/verify`, {
+    const res = await apiFetch(`/api/admin/payments/${encodeURIComponent(paymentId)}/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, rejectionReason, adminUsername })
     });
-    const data = await res.json();
-    if (!res.ok) return { success: false, error: data.error || 'Verification failed' };
+    const responseText = await res.text();
+    let data: any;
+    try {
+      data = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      const preview = responseText.slice(0, 180).replace(/\\s+/g, ' ').trim();
+      return {
+        success: false,
+        error: `Admin verification API returned non-JSON (HTTP ${res.status}). ${preview || 'Empty response'}`
+      };
+    }
+    if (!res.ok) return { success: false, error: data.error || `Verification failed (HTTP ${res.status})` };
     return data;
   } catch (err: any) {
     return { success: false, error: err.message };
