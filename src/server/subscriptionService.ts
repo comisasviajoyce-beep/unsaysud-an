@@ -232,6 +232,111 @@ export function ensureStallTrialInitialized(stallName: string, ownerId: string):
   return created;
 }
 
+/**
+ * Starts the one-time 14-day trial for a newly registered stall owner.
+ * The trial is stored in the same durable subscription documents as manual
+ * trial activation, and an existing trial is never restarted.
+ */
+export function activateStallFreeTrial(stallName: string, ownerId: string) {
+  const cleanStallName = String(stallName || "").trim();
+  if (!cleanStallName) return { success: false, error: "Stall name is required." };
+
+  let trial = trials.find(t => t.stallName === cleanStallName);
+  if (!trial) {
+    trial = ensureStallTrialInitialized(cleanStallName, ownerId);
+  }
+
+  const existingSub = subscriptions.find(s => s.stallName === cleanStallName);
+  if (existingSub && normalizeSubscriptionStatus(existingSub.status) === "SUSPENDED") {
+    return { success: false, error: "This stall account is suspended." };
+  }
+  if (existingSub && normalizeSubscriptionStatus(existingSub.status) === "ACTIVE" &&
+      !existingSub.isTrial && new Date(existingSub.expirationDate).getTime() > Date.now()) {
+    return { success: false, error: "This stall already has an active paid subscription." };
+  }
+  if (trial.startDate && trial.endDate) {
+    const endMs = new Date(trial.endDate).getTime();
+    const active = endMs > Date.now();
+    return {
+      success: active,
+      alreadyUsed: true,
+      error: active ? undefined : "The free trial for this stall has already expired and cannot be restarted.",
+      trialStatus: active ? "Trial Active" as const : "Trial Expired" as const,
+      trialStartDate: trial.startDate,
+      trialEndDate: trial.endDate,
+      trialDaysRemaining: active ? Math.max(1, Math.ceil((endMs - Date.now()) / 86400000)) : 0
+    };
+  }
+
+  const now = new Date();
+  const startDate = now.toISOString();
+  const endDate = new Date(now.getTime() + 14 * 86400000).toISOString();
+  trial.ownerId = ownerId;
+  trial.trialStatus = "Trial Active";
+  trial.startDate = startDate;
+  trial.endDate = endDate;
+  trial.durationDays = 14;
+  trial.updatedAt = startDate;
+  saveJsonFile(TRIALS_FILE, trials);
+
+  let sub = existingSub;
+  if (!sub) {
+    sub = {
+      id: `sub_trial_${cleanStallName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
+      stallName: cleanStallName,
+      ownerId,
+      plan: "trial",
+      status: "Active",
+      isTrial: true,
+      trialStartDate: startDate,
+      trialEndDate: endDate,
+      trialStatus: "Trial Active",
+      startDate,
+      expirationDate: endDate,
+      nextDueDate: endDate,
+      billingCycle: "weekly",
+      autoRenewReminder: true,
+      updatedAt: startDate,
+      createdAt: startDate
+    };
+    subscriptions.push(sub);
+  } else {
+    sub.ownerId = ownerId;
+    sub.status = "Active";
+    sub.plan = "trial";
+    sub.isTrial = true;
+    sub.trialStartDate = startDate;
+    sub.trialEndDate = endDate;
+    sub.trialStatus = "Trial Active";
+    sub.startDate = startDate;
+    sub.expirationDate = endDate;
+    sub.nextDueDate = endDate;
+    sub.updatedAt = startDate;
+  }
+  saveJsonFile(SUBSCRIPTIONS_FILE, subscriptions);
+
+  notifications.unshift({
+    id: `notif_${Date.now()}_trial_welcome`,
+    recipientType: "stall",
+    recipientId: cleanStallName,
+    title: "Free 14-Day Trial Activated!",
+    message: `Welcome! Your 14-day free trial is active until ${new Date(endDate).toLocaleDateString()}. You can now manage your menu, photos, prices, and sales tracker.`,
+    type: "access_granted",
+    isRead: false,
+    link: "portal",
+    createdAt: startDate
+  });
+  saveJsonFile(NOTIFICATIONS_FILE, notifications);
+
+  return {
+    success: true,
+    trialStatus: "Trial Active" as const,
+    trialStartDate: startDate,
+    trialEndDate: endDate,
+    trialDaysRemaining: 14
+  };
+}
+
 export function hasStallSubscriptionOrTrialRecord(stallName: string): boolean {
   return (
     subscriptions.some(s => s.stallName === stallName) ||
@@ -575,8 +680,13 @@ export function getStallSubscriptionAndTrialInfo(stallName: string) {
     };
   }
 
-  // 2. Check if pending verification
-  if (normSubStatus === 'PENDING') {
+  // A valid trial remains active even if a renewal payment is pending.
+  const activeTrialExists = Boolean(
+    trial.startDate && trial.endDate && new Date(trial.endDate).getTime() > now
+  );
+
+  // 2. Check if pending verification only when no valid trial is running.
+  if (normSubStatus === 'PENDING' && !activeTrialExists) {
     return {
       hasSubscription: true,
       status: 'PENDING' as const,
