@@ -372,19 +372,18 @@ export function computeNextExpiration(
   } else {
     // Monthly Plan
     if (billingCycle === "calendar_month") {
+      // A monthly subscription lasts one full calendar month from activation
+      // (or from the current expiry when renewing early). Do not align it to
+      // the end of the current calendar month, which can incorrectly grant
+      // only a few days when payment is made late in the month.
       const year = baseDate.getFullYear();
       const month = baseDate.getMonth();
       const day = baseDate.getDate();
-
-      // If baseDate is already at the last day of the month or near end, roll to next month's last day
-      const lastDayOfCurrentMonth = new Date(year, month + 1, 0).getDate();
-      if (day >= lastDayOfCurrentMonth - 3) {
-        // Aligned to last day of next month at 23:59:59
-        expDate = new Date(year, month + 2, 0, 23, 59, 59, 999);
-      } else {
-        // Aligned to last day of current month at 23:59:59
-        expDate = new Date(year, month + 1, 0, 23, 59, 59, 999);
-      }
+      const targetMonthLastDay = new Date(year, month + 2, 0).getDate();
+      expDate = new Date(baseDate);
+      expDate.setDate(1);
+      expDate.setMonth(month + 1);
+      expDate.setDate(Math.min(day, targetMonthLastDay));
     } else {
       // Exact 30 days
       expDate = new Date(baseDate.getTime() + 30 * 24 * 60 * 60 * 1000);
