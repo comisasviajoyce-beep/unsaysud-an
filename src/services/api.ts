@@ -1023,7 +1023,7 @@ export async function adminVerifyPaymentAPI(
   adminUsername?: string
 ): Promise<{ success: boolean; message?: string; payment?: PaymentRecord; subscription?: UserSubscription; error?: string }> {
   try {
-    const res = await apiFetch(`/api/admin/payments/${paymentId}/verify`, {
+    const res = await apiFetch(`/api/admin/payments/${encodeURIComponent(paymentId)}/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, rejectionReason, adminUsername })

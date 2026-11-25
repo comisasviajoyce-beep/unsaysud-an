@@ -1314,22 +1314,6 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
     }
   });
 
-  // Admin payment list endpoint (used by payment history and verification views).
-  app.get("/api/admin/payments", (req, res) => {
-    try {
-      const admin = requireSuperAdmin(req, res);
-      if (!admin) return;
-      const sortedPayments = [...payments].sort((a, b) =>
-        new Date(b.submittedAt || b.paymentDate || 0).getTime() -
-        new Date(a.submittedAt || a.paymentDate || 0).getTime()
-      );
-      return res.json({ success: true, payments: sortedPayments });
-    } catch (err: any) {
-      console.error("Admin payment list error:", err);
-      return res.status(500).json({ error: err.message || "Failed to load payment records." });
-    }
-  });
-
   // 3. Admin: Verify Payment (Approve or Reject with Reason)
   app.post("/api/admin/payments/:id/verify", (req, res) => {
     try {
