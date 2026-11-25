@@ -153,14 +153,12 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
         const expired = !!res.isExpired;
         setIsSubscriptionExpired(expired);
         setSubscriptionDaysRemaining(res.daysRemaining || 0);
-        if (expired && activeTabRef.current !== 'subscription' && activeTabRef.current !== 'account') {
-          setActiveTab('subscription');
-        }
+        // Subscription status is informational here. Keep the merchant on the
+        // tab they selected; billing must not hijack portal navigation.
       } else {
+        setStallSubscription(null);
         setIsSubscriptionExpired(true);
-        if (activeTabRef.current !== 'subscription' && activeTabRef.current !== 'account') {
-          setActiveTab('subscription');
-        }
+        // Merchants can still access portal sections and open Billing manually.
       }
       setPendingPaymentInfo(res.pendingPayment || null);
     } catch (err) {
