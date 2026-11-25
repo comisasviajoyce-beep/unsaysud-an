@@ -17,6 +17,7 @@ import {
   initializeSubscriptionDatabaseStore,
   isStallSubscriptionActive,
   ensureStallTrialInitialized,
+  activateStallFreeTrial,
   hasStallSubscriptionOrTrialRecord,
   getStallSubscriptionAndTrialInfo
 } from "./src/server/subscriptionService";
@@ -919,8 +920,13 @@ export async function createApp() {
       stallOwners.push(newOwner);
       saveOwnersToDisk();
 
-      // Initialize stall trial state cleanly ("Not Started", ready for 14-day Free Trial activation)
+      // Enroll every newly registered owner in the one-time 14-day free trial.
+      // The authenticated session below lets the owner enter the dashboard immediately.
       ensureStallTrialInitialized(newOwner.stallName, newOwner.id);
+      const trialActivation = activateStallFreeTrial(newOwner.stallName, newOwner.id);
+      if (!trialActivation.success) {
+        console.warn("New merchant registered without an active free trial:", trialActivation.error || trialActivation.trialStatus);
+      }
       menuVersion = Date.now();
 
       // Issue persistent signed HttpOnly session cookie
