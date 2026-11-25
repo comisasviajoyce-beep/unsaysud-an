@@ -288,6 +288,18 @@ function saveMenuToDisk() {
   }
 }
 
+// Wait for queued MySQL document writes before returning success from merchant mutations.
+// This prevents Vercel serverless functions from ending before menu/photo-vault data is durable.
+async function flushMerchantManagementWrites(): Promise<boolean> {
+  try {
+    await flushAppDataDocumentWrites();
+    return true;
+  } catch (err) {
+    console.error("Merchant management data could not be confirmed in MySQL:", err);
+    return false;
+  }
+}
+
 function loadNoticesData(): Record<string, string> {
   try {
     if (fs.existsSync(NOTICES_STORE_FILE)) {
@@ -1820,7 +1832,7 @@ export async function createApp() {
   });
 
   // Toggle item availability (in-stock / sold-out)
-  app.post("/api/menu/:id/toggle-stock", (req, res) => {
+  app.post("/api/menu/:id/toggle-stock", async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const { stall } = req.body || {};
     const item = menuItems.find(m => m.id === id);
@@ -1848,12 +1860,15 @@ export async function createApp() {
 
     item.available = !item.available;
     saveMenuToDisk();
+    if (!(await flushMerchantManagementWrites())) {
+      return res.status(500).json({ error: "Stock status could not be confirmed as saved. Please refresh and try again." });
+    }
     menuVersion = Date.now();
     res.json({ success: true, item });
   });
 
   // Adjust or set price
-  app.post("/api/menu/:id/price", (req, res) => {
+  app.post("/api/menu/:id/price", async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const { price, delta, stall } = req.body || {};
     const item = menuItems.find(m => m.id === id);
@@ -1887,6 +1902,9 @@ export async function createApp() {
     }
 
     saveMenuToDisk();
+    if (!(await flushMerchantManagementWrites())) {
+      return res.status(500).json({ error: "Price update could not be confirmed as saved. Please refresh and try again." });
+    }
     menuVersion = Date.now();
     res.json({ success: true, item });
   });
@@ -1964,6 +1982,9 @@ export async function createApp() {
           delete item.imageUrl;
         }
         saveMenuToDisk();
+        if (!(await flushMerchantManagementWrites())) {
+          return res.status(500).json({ error: "Photo removal could not be confirmed as saved. Please refresh and try again." });
+        }
         menuVersion = Date.now();
 
         return res.json({
@@ -2043,6 +2064,9 @@ export async function createApp() {
       // 3. Persist updated menu database to disk
       try {
         saveMenuToDisk();
+        if (!(await flushMerchantManagementWrites())) {
+          throw new Error("MySQL did not confirm the saved menu photo and image registry.");
+        }
       } catch (dbErr) {
         console.error("Failed to update database record for menu photo:", dbErr);
         try { await deleteAppMedia(imageId); } catch {}
@@ -2064,7 +2088,7 @@ export async function createApp() {
   });
 
   // Update existing menu item details (name, price, category, etc.)
-  app.post("/api/menu/:id/update", (req, res) => {
+  app.post("/api/menu/:id/update", async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
       const { stall, updates } = req.body || {};
@@ -2151,6 +2175,9 @@ export async function createApp() {
       if (typeof updates.hidden === "boolean") item.hidden = updates.hidden;
 
       saveMenuToDisk();
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "Menu changes could not be confirmed as saved. Please refresh and try again." });
+      }
       menuVersion = Date.now();
 
       res.json({ success: true, item });
@@ -2228,6 +2255,9 @@ export async function createApp() {
       // Remove from active menu list
       menuItems.splice(itemIndex, 1);
       saveMenuToDisk();
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "Menu removal and Photo Vault update could not be confirmed as saved." });
+      }
       menuVersion = Date.now();
 
       res.json({
@@ -2260,7 +2290,7 @@ export async function createApp() {
   });
 
   // Restore Archived Dish
-  app.post("/api/menu/restore-dish", (req, res) => {
+  app.post("/api/menu/restore-dish", async (req, res) => {
     try {
       const { archiveId, stall } = req.body || {};
       const idx = imageRegistry.archivedDishes.findIndex(a => a.archiveId === archiveId);
@@ -2303,6 +2333,9 @@ export async function createApp() {
 
       menuItems.push(restoredDish);
       saveMenuToDisk();
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "Restored dish and photo could not be confirmed as saved." });
+      }
       menuVersion = Date.now();
 
       res.json({ success: true, item: restoredDish });
@@ -2358,6 +2391,9 @@ export async function createApp() {
 
       if (updatedCount > 0) {
         saveMenuToDisk();
+        if (!(await flushMerchantManagementWrites())) {
+          return res.status(500).json({ error: "Restored photos could not be confirmed as saved." });
+        }
         menuVersion = Date.now();
       }
 
@@ -2452,6 +2488,9 @@ export async function createApp() {
 
       menuItems.unshift(created);
       saveMenuToDisk();
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "New menu item and photo could not be confirmed as saved." });
+      }
       menuVersion = Date.now();
 
       res.json({ success: true, item: created });
@@ -2677,6 +2716,9 @@ export async function createApp() {
         menuVersions[stall] = menuVersions[stall].slice(0, 35);
       }
       saveMenuVersions(menuVersions);
+      if (!(await flushMerchantManagementWrites())) {
+        return res.status(500).json({ error: "Menu changes, Photo Vault records, and version history could not be confirmed as saved." });
+      }
 
       menuVersion = Date.now();
 
