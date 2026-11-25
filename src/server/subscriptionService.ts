@@ -653,10 +653,7 @@ export function isStallSubscriptionActive(stallName: string): {
 
   const info = getStallSubscriptionAndTrialInfo(stallName);
 
-  if (info.status === 'ACTIVE') {
-    return { active: true, status: 'ACTIVE', subscription: info.subscription };
-  }
-
+  // An administrator suspension always overrides any trial or paid access.
   if (info.status === 'SUSPENDED') {
     return {
       active: false,
@@ -664,6 +661,23 @@ export function isStallSubscriptionActive(stallName: string): {
       reason: "Stall portal access and menu listings are suspended by the administrator.",
       subscription: info.subscription
     };
+  }
+
+  // A valid 14-day trial must remain fully usable even if the owner has also
+  // submitted a renewal payment that is still pending admin verification.
+  // The status lookup reports PENDING first, so validate the trial dates here.
+  const trialEndTime = info.trialEndDate ? new Date(info.trialEndDate).getTime() : 0;
+  const hasActiveTrial =
+    info.trialStatus === "Trial Active" &&
+    Number.isFinite(trialEndTime) &&
+    trialEndTime > Date.now();
+
+  if (hasActiveTrial) {
+    return { active: true, status: 'ACTIVE', subscription: info.subscription };
+  }
+
+  if (info.status === 'ACTIVE') {
+    return { active: true, status: 'ACTIVE', subscription: info.subscription };
   }
 
   if (info.status === 'PENDING') {
