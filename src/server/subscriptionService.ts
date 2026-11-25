@@ -188,7 +188,7 @@ export async function initializeSubscriptionDatabaseStore(): Promise<void> {
     ? new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value))
     : "";
   for (const sub of subscriptions) {
-    const isSwirlyBits = /swirly\\s*bits/i.test(sub.stallName || "");
+    const isSwirlyBits = /swirly\s*bits/i.test(sub.stallName || "");
     const startDay = phDate(sub.startDate);
     const expiryDay = phDate(sub.expirationDate);
     if (
