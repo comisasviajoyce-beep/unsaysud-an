@@ -367,7 +367,7 @@ export default function App() {
           lastKnownVersion = data.version;
         }
 
-        if (Array.isArray(data.stalls) && data.stalls.length > 0) {
+        if (Array.isArray(data.stalls)) {
           const baseMap = new Map(stallCredentials.map(s => [s.name, s]));
           const mergedStalls: StallCredential[] = data.stalls.map(srv => {
             const existing = baseMap.get(srv.name);
@@ -377,7 +377,13 @@ export default function App() {
               officialName: srv.officialName || existing?.officialName,
               zone: srv.zone || existing?.zone || 'inside',
               pin: '',
-              hasRegisteredOwner: srv.hasRegisteredOwner
+              hasRegisteredOwner: srv.hasRegisteredOwner,
+              isActive: srv.isActive,
+              isPubliclyVisible: srv.isActive,
+              subscriptionStatus: srv.subscriptionStatus,
+              trialStatus: srv.trialStatus,
+              isTrial: srv.isTrial,
+              isSubscribed: srv.isSubscribed
             };
           });
           setStallsList(mergedStalls);

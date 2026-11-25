@@ -1512,7 +1512,17 @@ export async function createApp() {
           ownerName: owner?.ownerName || null,
           ownerUsername: owner?.username || null,
           accountStatus: owner ? (owner.accountStatus || "active") : null,
-          subscriptionStatus: owner || hasStallSubscriptionOrTrialRecord(s.name) ? subInfo.status : "CATALOG",
+          subscriptionStatus: !owner && !hasStallSubscriptionOrTrialRecord(s.name)
+            ? "CATALOG"
+            : owner?.accountStatus === "suspended" || subInfo.status === "SUSPENDED"
+              ? "SUSPENDED"
+              : subInfo.status === "PENDING"
+                ? "PENDING"
+                : subInfo.isSubscribed
+                  ? "SUBSCRIBED"
+                  : subInfo.isTrial
+                    ? "FREE TRIAL ACTIVE"
+                    : subInfo.trialStatus.toUpperCase(),
           trialStatus: subInfo.trialStatus,
           isPubliclyVisible: visibleCheck.active,
           totalDishes: stallDishes.length,
@@ -1781,7 +1791,10 @@ export async function createApp() {
           zone: s.zone,
           isActive: access.active,
           subscriptionStatus: access.status,
-          hasRegisteredOwner: stallOwners.some(o => o.stallName.toLowerCase() === s.name.toLowerCase())
+          hasRegisteredOwner: stallOwners.some(o => o.stallName.toLowerCase() === s.name.toLowerCase()),
+          trialStatus: getStallSubscriptionAndTrialInfo(s.name).trialStatus,
+          isTrial: getStallSubscriptionAndTrialInfo(s.name).isTrial,
+          isSubscribed: getStallSubscriptionAndTrialInfo(s.name).isSubscribed
         };
       }),
       version: menuVersion
