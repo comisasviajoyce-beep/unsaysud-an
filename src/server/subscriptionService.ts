@@ -704,7 +704,7 @@ export function getStallSubscriptionAndTrialInfo(stallName: string) {
   }
 
   // 3. Check if stall has an active verified paid subscription
-  const isPaidActive = sub && normSubStatus === "ACTIVE" && !sub.isTrial && new Date(sub.expirationDate).getTime() > now;
+  const isPaidActive = sub && normSubStatus === "ACTIVE" && sub.plan !== "trial" && new Date(sub.expirationDate).getTime() > now;
 
   let trialStatus: TrialStatus = trial.trialStatus;
   let isTrial = false;
