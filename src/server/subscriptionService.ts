@@ -86,7 +86,7 @@ const defaultSettings: AdminPaymentSettings = {
       price: 100,
       billingCycle: "calendar_month",
       name: "Monthly Plan",
-      description: "₱100 for one full month. Regular renewal deadline is the last day of the calendar month.",
+      description: "₱100 for one full month from activation. Early renewals extend from the current expiration date.",
       isEnabled: true
     }
   },
@@ -180,6 +180,35 @@ export async function initializeSubscriptionDatabaseStore(): Promise<void> {
   auditLogs = await loadAppDataDocument("subscription_audit_logs", auditLogs);
   subscriptions = (await loadAppDataDocument("subscription_subscriptions", subscriptions)).map(s => ({ ...s, status: normalizeSubscriptionStatus(s.status) }));
   trials = await loadAppDataDocument("subscription_stall_trials", trials);
+
+  // One-time, narrowly scoped repair for the known Swirly Bits monthly
+  // subscription that was incorrectly aligned to Dec 1 by the old calendar-
+  // month calculation despite starting on Nov 25, 2026.
+  let repairedSwirlyBitsExpiry = false;
+  for (const sub of subscriptions) {
+    const isSwirlyBits = /swirly\\s*bits/i.test(sub.stallName || "");
+    const startDay = String(sub.startDate || "").slice(0, 10);
+    const expiryDay = String(sub.expirationDate || "").slice(0, 10);
+    if (
+      isSwirlyBits &&
+      sub.plan === "monthly" &&
+      normalizeSubscriptionStatus(sub.status) === "ACTIVE" &&
+      startDay === "2026-11-25" &&
+      expiryDay === "2026-12-01"
+    ) {
+      const correctedExpiry = new Date(sub.startDate);
+      correctedExpiry.setMonth(correctedExpiry.getMonth() + 1);
+      sub.expirationDate = correctedExpiry.toISOString();
+      sub.nextDueDate = correctedExpiry.toISOString();
+      sub.billingCycle = "calendar_month";
+      sub.updatedAt = new Date().toISOString();
+      repairedSwirlyBitsExpiry = true;
+    }
+  }
+  if (repairedSwirlyBitsExpiry) {
+    saveJsonFile(SUBSCRIPTIONS_FILE, subscriptions);
+  }
+
   subscriptionStoreInitialized = true;
 }
 
