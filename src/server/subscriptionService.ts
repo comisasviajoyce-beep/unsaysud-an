@@ -181,23 +181,27 @@ export async function initializeSubscriptionDatabaseStore(): Promise<void> {
   subscriptions = (await loadAppDataDocument("subscription_subscriptions", subscriptions)).map(s => ({ ...s, status: normalizeSubscriptionStatus(s.status) }));
   trials = await loadAppDataDocument("subscription_stall_trials", trials);
 
-  // One-time, narrowly scoped repair for the known Swirly Bits monthly
-  // subscription that was incorrectly aligned to Dec 1 by the old calendar-
-  // month calculation despite starting on Nov 25, 2026.
+  // One-time, narrowly scoped repair for the known Swirly Bits record.
+  // Compare dates in Philippine local time because ISO timestamps may be UTC.
   let repairedSwirlyBitsExpiry = false;
+  const phDate = (value: string | undefined) => value
+    ? new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value))
+    : "";
   for (const sub of subscriptions) {
     const isSwirlyBits = /swirly\\s*bits/i.test(sub.stallName || "");
-    const startDay = String(sub.startDate || "").slice(0, 10);
-    const expiryDay = String(sub.expirationDate || "").slice(0, 10);
+    const startDay = phDate(sub.startDate);
+    const expiryDay = phDate(sub.expirationDate);
     if (
       isSwirlyBits &&
       sub.plan === "monthly" &&
       normalizeSubscriptionStatus(sub.status) === "ACTIVE" &&
-      startDay === "2026-11-25" &&
-      expiryDay === "2026-12-01"
+      startDay >= "2026-11-24" &&
+      startDay <= "2026-11-26" &&
+      expiryDay >= "2026-11-30" &&
+      expiryDay <= "2026-12-02"
     ) {
       const correctedExpiry = new Date(sub.startDate);
-      correctedExpiry.setMonth(correctedExpiry.getMonth() + 1);
+      correctedExpiry.setUTCMonth(correctedExpiry.getUTCMonth() + 1);
       sub.expirationDate = correctedExpiry.toISOString();
       sub.nextDueDate = correctedExpiry.toISOString();
       sub.billingCycle = "calendar_month";
@@ -206,7 +210,14 @@ export async function initializeSubscriptionDatabaseStore(): Promise<void> {
     }
   }
   if (repairedSwirlyBitsExpiry) {
-    saveJsonFile(SUBSCRIPTIONS_FILE, subscriptions);
+    // Persist directly and await MySQL confirmation before the app serves
+    // subscription data; do not rely on a deferred response write queue.
+    await pool.execute(
+      `INSERT INTO app_data_documents (document_key, document_value)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE document_value = VALUES(document_value)`,
+      ["subscription_subscriptions", JSON.stringify(subscriptions)]
+    );
   }
 
   subscriptionStoreInitialized = true;
