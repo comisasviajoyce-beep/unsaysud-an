@@ -11,12 +11,19 @@ let appPromise: ReturnType<typeof createApp> | undefined;
 
 export default async function handler(req: Request, res: Response): Promise<void> {
   try {
-    // Vercel rewrites every /api/menu/* request to this single function and
-    // carries the original nested path in __menuPath.
+    // Reuse this existing serverless function for menu and subscription-status
+    // routes so the Hobby plan function-count limit is not exceeded.
     const parsedUrl = new URL(req.url || "/", "http://localhost");
-    const routedPath = parsedUrl.searchParams.get("__menuPath");
-    if (routedPath !== null) {
-      const cleanPath = routedPath.replace(/^\/+/, "");
+    const apiPath = parsedUrl.searchParams.get("__apiPath");
+    const menuPath = parsedUrl.searchParams.get("__menuPath");
+
+    if (apiPath !== null) {
+      const cleanPath = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
+      parsedUrl.searchParams.delete("__apiPath");
+      const query = parsedUrl.searchParams.toString();
+      req.url = `${cleanPath}${query ? `?${query}` : ""}`;
+    } else if (menuPath !== null) {
+      const cleanPath = menuPath.replace(/^\/+/, "");
       parsedUrl.searchParams.delete("__menuPath");
       const query = parsedUrl.searchParams.toString();
       req.url = `/api/menu${cleanPath ? `/${cleanPath}` : ""}${query ? `?${query}` : ""}`;
@@ -28,9 +35,9 @@ export default async function handler(req: Request, res: Response): Promise<void
     const app = await appPromise;
     app(req, res);
   } catch (error) {
-    console.error("Failed to initialize Unsay Sud-an menu API:", error);
+    console.error("Failed to initialize Unsay Sud-an API:", error);
     if (!res.headersSent) {
-      res.status(500).json({ error: "Menu API initialization failed." });
+      res.status(500).json({ error: "API initialization failed." });
     }
   }
 }
