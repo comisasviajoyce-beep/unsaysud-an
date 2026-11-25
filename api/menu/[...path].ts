@@ -7,11 +7,16 @@ const { createApp } = require("../../dist/server.cjs") as {
   createApp: () => Promise<Express>;
 };
 
-// Route all menu endpoints through the shared Express API and MySQL persistence layer.
+// Vercel strips the function's filesystem route prefix from req.url.
+// Restore the Express mount path so nested /api/menu endpoints match.
 let appPromise: ReturnType<typeof createApp> | undefined;
 
 export default async function handler(req: Request, res: Response): Promise<void> {
   try {
+    const requestUrl = req.url || "/";
+    if (!requestUrl.startsWith("/api/menu")) {
+      req.url = `/api/menu${requestUrl.startsWith("/") ? requestUrl : `/${requestUrl}`}`;
+    }
     appPromise ??= createApp();
     const app = await appPromise;
     app(req, res);
