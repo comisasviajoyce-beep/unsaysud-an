@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/menu/:menuPath*",
+      "destination": "/api/menu?__menuPath=:menuPath*"
+    }
+  ]
+}
