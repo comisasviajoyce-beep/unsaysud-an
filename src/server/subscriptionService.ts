@@ -1497,11 +1497,24 @@ export function registerSubscriptionRoutes(app: express.Express, hooks?: Merchan
         } else {
           sub.plan = payment.plan;
           sub.status = "ACTIVE";
+          // Payment approval converts a trial record into a verified paid subscription.
+          // Clear the trial marker so the authoritative status checker recognizes it.
+          sub.isTrial = false;
+          sub.isPaidSubscription = true;
+          sub.trialStatus = "Subscribed";
           sub.startDate = startDate.toISOString();
           sub.expirationDate = expirationDate.toISOString();
           sub.nextDueDate = nextDueDate.toISOString();
           sub.lastPaymentId = payment.id;
           sub.updatedAt = now.toISOString();
+        }
+
+        // Keep the standalone trial record in sync after a successful paid conversion.
+        const convertedTrial = trials.find(t => t.stallName === payment.stallName);
+        if (convertedTrial) {
+          convertedTrial.trialStatus = "Subscribed";
+          convertedTrial.updatedAt = now.toISOString();
+          saveJsonFile(TRIALS_FILE, trials);
         }
 
         payment.subscriptionExtendedTo = expirationDate.toISOString();
